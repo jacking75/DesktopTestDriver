@@ -331,4 +331,3 @@ dotnet publish src/Client.Broker/Client.Broker.csproj -c Release -r win-x64 --se
 | 코딩 에이전트가 따라야 할 시나리오 문법 | [시나리오 작성 규약](docs/scenario-authoring.md) |
 | Controller·Agent의 실행·통신 계약 | [Controller / Agent 계약](docs/controller.md) |
 | 복합 제품 시험에 부족한 기능과 추가 개발 항목 | [사용 준비 상태와 추가 개발 항목](docs/readiness-and-gaps.md) |
-| 실제 시험의 준비와 실행 순서 | [E2E 진행 순서](docs/e2e-test-plan.md) |
