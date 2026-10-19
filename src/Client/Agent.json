@@ -1,0 +1,7 @@
+{
+  "machineId": "notebook-74",
+  "host": "192.168.0.61",
+  "port": 25071,
+  "targetSession": 0,
+  "stateRoot": "state"
+}

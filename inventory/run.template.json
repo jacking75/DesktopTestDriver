@@ -1,0 +1,30 @@
+{
+  "protocolVersion": 2,
+  "runId": "replace-run-id",
+  "machineId": "test-vm",
+  "role": "observer",
+  "targetSession": 1,
+  "expectedDesktop": "Default",
+  "expiresAt": "2026-10-18T00:00:00Z",
+  "maxSeconds": 600,
+  "heartbeatMilliseconds": 3000,
+  "maxHoldMilliseconds": 1500,
+  "frameMaxAgeMilliseconds": 1500,
+  "recovery": "R0",
+  "recoveryEvidence": null,
+  "allowInput": false,
+  "windows": [],
+  "allowedKeys": [],
+  "observationFiles": [],
+  "delegation": {
+    "owner": "REPLACE_MACHINE\\owner",
+    "requester": "REPLACE_VERIFIED_REQUESTER",
+    "keyId": "lab-owner",
+    "scenarios": ["counter-sample"],
+    "actions": ["inspect", "heartbeat"],
+    "productPermissions": [],
+    "evidence": { "retainHours": 24, "maxBytes": 67108864, "images": false },
+    "signature": "",
+    "scenarioHashes": { "counter-sample": "REPLACE_WITH_PLAN_CHECK_SHA256" }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "generic-desktop",
+  "purpose": "Independent fixture window, input observation, stop and restoration without any product",
+  "recovery": "R1",
+  "environments": ["isolated-windows", "independent-watchdog"],
+  "screenOccupied": true,
+  "minimumSeconds": 10,
+  "maximumSeconds": 900,
+  "steps": [
+    { "id": "baseline", "operation": "snapshot", "expected": "record exact driver-owned fixture process/window/frame/session and empty input ledger", "timeoutMilliseconds": 3000 },
+    { "id": "observe", "operation": "collect-metrics", "expected": "fixture observes requested click/drag/wheel/key/Unicode; owned held inputs released", "timeoutMilliseconds": 3000 }
+  ],
+  "restore": [
+    { "id": "restore", "operation": "restore-baseline", "expected": "stop both nodes; remove only owned fixture/tasks/files; verify normal desktop, SSH and original baseline", "timeoutMilliseconds": 3000 }
+  ]
+}

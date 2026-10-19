@@ -1,0 +1,4 @@
+{
+  "parameters": {"targetSession": 1},
+  "roles": {"observer": "../../inventory/run.template.json"}
+}

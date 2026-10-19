@@ -1,0 +1,56 @@
+{
+  "id": "counter-sample",
+  "adapter": "counter-example",
+  "purpose": "Independent product-free adapter example",
+  "coverage": [
+    "D20"
+  ],
+  "preconditions": [
+    "simulation=true",
+    "signed owner delegation for counter-sample"
+  ],
+  "evidence": [
+    "sample observer count and cleanup"
+  ],
+  "stopCondition": "first mismatch or deadline",
+  "cleanup": "reset sample; no OS resource",
+  "reuse": "independent contracts",
+  "targetSeconds": 10,
+  "maximumSeconds": 20,
+  "screenSeconds": 0,
+  "recovery": "R0",
+  "steps": [
+    {
+      "id": "increment",
+      "role": "observer",
+      "action": "increment",
+      "arguments": {},
+      "assertions": [
+        {
+          "fact": "count",
+          "relation": "eq",
+          "expected": "1",
+          "source": "sample-observer",
+          "role": "observer"
+        }
+      ],
+      "timeoutMilliseconds": 3000
+    },
+    {
+      "id": "observe",
+      "role": "observer",
+      "action": "observe",
+      "arguments": {},
+      "assertions": [
+        {
+          "fact": "count",
+          "relation": "eq",
+          "expected": "1",
+          "source": "sample-observer",
+          "role": "observer"
+        }
+      ],
+      "timeoutMilliseconds": 3000
+    }
+  ]
+}
