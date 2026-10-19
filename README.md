@@ -1,58 +1,65 @@
 # DesktopTestDriver
 
-DesktopTestDriver는 **여러 Windows PC의 데스크톱 프로그램을 시나리오대로 조작하고, 결과를 확인하는 개발·시험 도구**다. 프로그램 실행, 창과 버튼 조회, 키보드 입력, 마우스 조작, 화면 이미지 수집을 제공한다. 예를 들어 시험 앱을 실행하고 버튼을 클릭한 뒤, 앱이 기록한 결과나 화면의 UI 정보를 확인하는 시험을 만들 수 있다.
+> **DesktopTestDriver는 사람이 아닌 코딩 에이전트를 위한 도구다. 코딩 에이전트가 원격 Windows 머신의 GUI 프로그램을 관측하고 조작하는 데 사용한다.**
 
-조작할 PC에는 **Controller**, 시험할 PC에는 **Agent**를 실행한다. 코딩 에이전트가 JSON 시나리오를 작성하면 Controller가 이를 읽고 Agent에 명령을 보내 실행·판정·정리를 진행한다. 새로운 앱을 시험할 때는 사용하는 프로젝트에 시나리오와 설정을 추가한다. Controller·Agent 소스를 수정하거나 앱별 어댑터를 만들 필요가 없다.
+코딩 에이전트는 이미 SSH로 원격 머신의 파일·프로세스·서비스·로그를 다룬다. DesktopTestDriver는 로그인된 데스크톱에서 수행해야 하는 앱 실행, 창·UI 정보 조회, 캡처, 키보드·마우스 조작을 제공한다.
 
-## 어떻게 사용하는가
+**무엇을 어떤 순서로 조작하고 제품의 동작이 올바른지 판단하는 책임은 코딩 에이전트에 있다.** 도구가 클릭 입력을 전달했다는 사실은 제품 기능이 성공했다는 뜻이 아니다. 전용 시나리오 파일 없이 개별 명령을 요청하는 방식을 기본 사용 방향으로 삼는다.
+
+## 사용 흐름과 현재 상태
+
+에이전트는 **계획 → GUI 관측 → 명령 요청 → 응답·화면 확인 → 다음 행동 결정**을 반복한다. 여러 PC의 작업 순서, 대기·재시도, 제품 결과 판정과 복원 계획은 에이전트 또는 사용하는 프로젝트가 담당한다. 일반 셸 명령과 파일 전송은 기존 SSH를 사용한다.
+
+목표 호출 구조는 다음과 같다. **새 SSH 프로그램을 만드는 것이 아니라, 기존 Agent.exe에 GUI 요청을 전달하는 명령을 추가한다. 이 직접 요청 경로는 아직 구현되지 않았다.**
 
 ```mermaid
 flowchart LR
-    F["사용하는 프로젝트<br/>시나리오 + 환경 설정"] --> C["조작 PC<br/>Controller"]
-    C <-->|"명령 · 관측 결과"| A["시험 PC<br/>Agent"]
-    A --> P["시험할 Windows 앱"]
-    C --> R["판정 · 실행 기록 · 정리 결과"]
+    A[코딩 에이전트] -->|기존 SSH 연결| C[원격 머신의 Agent.exe 요청 모드]
+    C <-->|로컬 IPC| H[로그인된 데스크톱의 Agent.exe GUI 실행 모드]
+    H <-->|관측·입력| P[GUI 프로그램]
+    C -->|명령 결과·관측값| A
 ```
 
-| 구성 | 하는 일 |
-|---|---|
-| Controller.exe | 조작 PC에서 실행한다. 연결된 시험 PC를 관리하고 시나리오를 실행한다 |
-| Agent.exe | 시험 PC의 로그인한 사용자 바탕화면에서 실행한다. Controller에 접속하고 해당 PC의 앱을 조작한다 |
-| 시나리오 파일 | 무엇을 어떤 순서로 하고, 어떤 결과를 성공으로 볼지 정의한다 |
-| 환경 설정 파일 | 시나리오의 역할을 실제 시험 PC에 연결하고, 허용할 앱·입력·시간 등을 지정한다 |
+| 구분 | 현재 사용할 수 있는 코드 경로 | 개발 방향 |
+|---|---|---|
+| 연결 | 조작 PC의 Controller와 대상 PC의 Agent가 TCP로 연결 | SSH에서 실행한 Agent.exe 요청 모드가 같은 머신의 GUI 실행부에 로컬 IPC로 전달 |
+| 명령 요청 | `begin` → `request` 반복 → `end` | 간단한 제어 세션과 GUI 명령 |
+| 설정 | 현재 계약상 run JSON 필요 | 설치 설정과 제어 세션 옵션으로 단순화 |
+| 시나리오·제품 판정 | 기존 시나리오 실행 코드도 포함 | GUI 기본 경로에서 분리하고 호출자에게 맡김 |
+| 오류·종료 | 명령 실패·작업 종료 시 소유 앱도 종료될 수 있음 | 재관측을 허용하고 입력 해제와 앱 종료를 분리 |
 
-사용 순서는 **파일 준비 → 두 PC의 설정·실행 → 연결 확인 → 시나리오 준비 → 검사·실행 → 결과 확인**이다. Agent는 한 번 실행해 두고 여러 시나리오에 계속 사용한다. 시험 PC가 여러 대라면 각 PC에 Agent 하나씩을 실행한다.
+현재의 창 조회·입력·캡처 코드를 재사용해 방향을 전환한다. 목적·책임 구분, 구체적인 요청 예시, 변경할 코드와 완료 기준을 [원격 GUI 조작 설계와 구현 계획](docs/agent-driven-desktop-control.md)에 모았다. 요청 파일은 한 번의 GUI 명령을 담으며, 시험 순서·기대 결과를 담는 시나리오가 아니다.
 
-아래는 수동 복사 방식으로 두 PC를 연결해 **입력 없이 사용자 세션 정보를 확인하는 첫 시나리오**를 실행하는 방법이다. 앱 실행·키보드·마우스 시험은 이 흐름을 익힌 뒤 별도의 입력 준비를 갖추어 작성한다.
+아래는 **현재 Controller/Agent 코드로 시나리오 없이 개별 명령을 보내는 호환 경로**다. 계획 중인 `Agent.exe --request`·`--session-open` 등의 명령은 아직 사용할 수 없다. 현재 직접 명령 경로도 실제 데스크톱 연동 확인이 남아 있다.
 
-## 1. 실행 파일을 준비한다
+## 현재 호환 경로의 실행 파일 준비
 
-두 PC 모두 Windows 10 2004 이상 또는 Windows 11 x64와 **.NET 10 Desktop Runtime**이 필요하다. 소스를 빌드할 PC에는 **.NET 10 SDK**가 필요하다. .NET 10.x 안에서 마이너·기능 밴드·패치 버전이 같을 필요는 없다.
+현재 프로젝트는 Windows 10 2004 이상 또는 Windows 11 x64와 .NET 10 Desktop Runtime을 사용한다. 소스 빌드에는 .NET 10 SDK가 필요하다. 실행 파일을 받았다면 빌드·게시를 건너뛰고 게시 폴더 전체를 복사한다.
 
-이미 배포용 파일을 받았다면 아래 빌드·게시 명령은 건너뛰고 폴더를 복사한다. 소스에서 준비한다면 `desktop-test-driver` 폴더에서 다음 명령을 실행한다.
+저장소 루트에서 다음을 실행한다.
 
-```text
+```powershell
 dotnet build DesktopTestDriver.slnx -c Release
 dotnet publish src/Server/Server.csproj -c Release -r win-x64 --self-contained false -o dist/Server
 dotnet publish src/Client/Client.csproj -c Release -r win-x64 --self-contained false -o dist/Client
 dotnet publish src/Client.Watchdog/Client.Watchdog.csproj -c Release -r win-x64 --self-contained false -o dist/Client.Watchdog
 ```
 
-프로젝트 폴더 이름은 Server/Client지만, 생성되는 실행 파일 이름은 Controller.exe/Agent.exe다. **EXE만 복사하지 않고 게시한 폴더 전체를 복사한다.** DLL·설정 파일도 필요하다.
+프로젝트 폴더 이름은 Server/Client지만 생성되는 실행 파일은 Controller.exe/Agent.exe다. EXE만 복사하지 않고 DLL·설정 파일을 포함한 폴더 전체를 복사한다.
 
-| 복사할 곳 | 복사할 폴더 | 복사 후 예시 경로 |
+| 복사할 곳 | 게시 폴더 | 복사 후 예 |
 |---|---|---|
-| 조작 PC | `dist/Server` 전체 | `C:\DesktopTestDriver\Server\Controller.exe` |
-| 시험 PC | `dist/Client` 전체 | `C:\DesktopTestDriver\Client\Agent.exe` |
-| 시험 PC | `dist/Client.Watchdog` 전체 | `C:\DesktopTestDriver\Client.Watchdog\Client.Watchdog.exe` |
+| 조작 PC | `dist/Server` | `C:\DesktopTestDriver\Server\Controller.exe` |
+| 대상 PC | `dist/Client` | `C:\DesktopTestDriver\Client\Agent.exe` |
+| 대상 PC | `dist/Client.Watchdog` | `C:\DesktopTestDriver\Client.Watchdog\Client.Watchdog.exe` |
 
-시험 PC에서 **Client와 Client.Watchdog은 같은 상위 폴더 아래** 있어야 한다. Watchdog은 연결 단절이나 작업 실행부 장애 시 입력 해제와 정리를 맡는 보조 프로그램이다. 사람이 따로 실행하지 않는다.
+대상 PC의 Client와 Client.Watchdog은 같은 상위 폴더 아래에 둔다. Watchdog은 도구 내부의 생존 감시·입력 해제·현재 정리 동작을 담당하며 별도로 실행하지 않는다.
 
-## 2. 두 PC의 연결 설정을 작성한다
+## 현재 호환 경로의 연결 설정
 
-이 예제에서 조작 PC의 IP는 `192.168.0.61`, 시험 PC의 이름은 `notebook-74`로 정한다. 실제 환경에 맞게 바꾼다. `notebook-74`는 Windows 컴퓨터 이름과 같을 필요가 없는, 시험 PC를 구분하는 ID다.
+예시에서 조작 PC 주소는 `192.168.0.61`, 대상 머신 ID는 `notebook-74`다. 실제 환경 값으로 바꾼다.
 
-**조작 PC:** Controller.exe 옆의 `Controller.json`을 수정한다.
+조작 PC의 Controller.exe 옆 `Controller.json`:
 
 ```json
 {
@@ -62,7 +69,7 @@ dotnet publish src/Client.Watchdog/Client.Watchdog.csproj -c Release -r win-x64 
 }
 ```
 
-**시험 PC:** Agent.exe 옆의 `Agent.json`을 수정한다.
+대상 PC의 Agent.exe 옆 `Agent.json`:
 
 ```json
 {
@@ -74,108 +81,40 @@ dotnet publish src/Client.Watchdog/Client.Watchdog.csproj -c Release -r win-x64 
 }
 ```
 
-두 파일의 `host`는 모두 **조작 PC의 주소**이고, `port`도 같아야 한다. Agent가 Controller로 접속한다. 조작 PC 방화벽에서 Controller.exe의 TCP 25071 수신을 시험 PC의 IP에 허용한다. 포트를 바꿀 때는 TCP 25001~25199 범위에서 정한다.
+두 파일의 host는 모두 조작 PC 주소다. Agent가 Controller로 접속하며 TCP 포트는 25001~25199에서 지정한다. 현재 경로에서는 해당 수신 연결이 가능해야 한다. 일반 TCP를 사용하며 TLS·연결 인증은 제공하지 않는다.
 
-Agent.json의 `targetSession: 0`은 Agent를 직접 실행한 현재 로그인 세션을 뜻한다. `stateRoot`는 실행 기록을 저장할 전용 폴더다. 상대 경로는 각 EXE가 있는 폴더를 기준으로 하며 처음 실행할 때 자동 생성한다. 예제에서는 조작 PC의 `Server\state`, 시험 PC의 `Client\state`가 된다.
+Agent.json의 `targetSession: 0`은 Agent를 실행한 현재 세션을 사용한다는 뜻이다. **SSH에서 Agent를 바로 실행하면 로그인된 GUI 세션이 자동 선택되는 것은 아니다.** 현재는 로그인된 일반 사용자 바탕화면에서 실행하거나, 기존 Broker의 대화형 세션 기동 경로를 사용해야 한다.
 
-이 도구는 신뢰하는 개발 환경용이며 일반 TCP를 사용한다. TLS·HTTPS·연결 인증은 제공하지 않는다.
+상대 stateRoot는 각 EXE 폴더 기준이다. 없으면 전용 상태 폴더를 생성한다. 현재 지원 범위는 활성 콘솔의 일반 사용자 `Default` 바탕화면이며, 관리자 UI·UAC·잠금 화면과 모든 RDP 환경을 지원하는 것은 아니다.
 
-## 3. Controller와 Agent를 실행하고 연결을 확인한다
+조작 PC에서 Controller.exe를 인자 없이 실행해 유지하고, 대상 PC에서 Agent.exe를 실행한다. 조작 PC의 별도 터미널에서 Server 폴더로 이동해 조회한다.
 
-조작 PC에서 Controller.exe를 실행한다. 인자는 필요 없다. 이 Controller는 켜 둔다.
-
-시험 PC에서는 로그인한 일반 사용자 바탕화면에서 Agent.exe를 실행한다. Agent가 Controller에 자동 접속한다. 관리자 권한이나 Windows 서비스 등록은 필요 없다.
-
-조작 PC에서 **별도 터미널**을 열고 Controller.exe가 있는 `Server` 폴더로 이동해 다음을 실행한다.
-
-```text
+```powershell
 .\Controller.exe list
 ```
 
-응답의 `data` 배열에서 다음 항목을 확인한다. 아래 값은 예시다.
+응답의 `data` 배열에서 `machineId`, 실제 `session`, `activeRun`, `cleanupBlocked`를 확인한다. 작업 전에는 activeRun이 null이고 cleanupBlocked가 false여야 한다. 목록이 비면 Controller·Agent 기동과 host·port·수신 연결을 확인한다.
 
-| 항목 | 예시 | 확인할 내용 |
-|---|---|---|
-| `machineId` | `notebook-74` | Agent.json에 지정한 시험 PC ID |
-| `session` | `1` | 실제 로그인 세션 번호. 다음 작업 설정에 사용한다 |
-| `activeRun` | `null` | 현재 실행 중인 작업이 없다 |
-| `cleanupBlocked` | `false` | 이전 작업의 정리 실패로 차단된 상태가 아니다 |
+여기서 Agent.exe는 원격 GUI 실행 프로세스 이름이며, 사용자인 코딩 에이전트와 구분한다. 각 대상 머신은 상시 Agent 하나와 작업 중 실행부·Watchdog을 사용한다.
 
-목록이 비어 있으면 아직 연결되지 않은 것이다. 먼저 Controller 기동, 두 설정의 host/port, 방화벽, 시험 PC의 Agent 실행 상태를 확인한다.
+## 시나리오 없이 현재 명령 보내기
 
-인자 없이 실행한 Controller.exe는 계속 동작하는 본체이고, `list` 등의 인자를 붙인 Controller.exe는 본체에 요청을 보내고 끝나는 관리 명령이다. 이후 명령도 같은 조작 PC의 Server 폴더에서 실행한다.
+현재 호환 경로에는 작업 설정 파일 하나와 요청할 명령 JSON이 필요하다. 시나리오·bindings 파일은 필요 없다. 다음 예는 입력 없이 세션과 데스크톱 상태를 조회한다.
 
-## 4. 첫 시나리오의 파일 세 개를 준비한다
+### 작업 설정
 
-시나리오는 **DesktopTestDriver를 사용하는 프로젝트의 폴더**에 둔다. 예를 들어 조작 PC에 다음과 같이 만든다. 이 세 파일을 시험 PC에 복사할 필요는 없다.
-
-```text
-C:\MyProject\tests\desktop\
-  inspect.scenario.json
-  lab.bindings.json
-  target.run.json
-```
-
-| 파일 | 내용 | 바꾸는 시점 |
-|---|---|---|
-| `inspect.scenario.json` | 수행 순서와 기대 결과 | 시험할 내용이 바뀔 때 |
-| `lab.bindings.json` | 역할 → 작업 설정 파일, 시나리오에 넣을 값 | 시험 환경이나 입력값이 바뀔 때 |
-| `target.run.json` | 실제 머신·세션·허용 명령·유효 시간 | 실행 회차마다 새 runId와 만료 시각을 지정할 때 |
-
-`observer`는 시나리오 안에서 쓰는 **역할 이름**이다. bindings가 이 역할을 target.run.json에 연결하고, run 파일의 machineId가 실제 Agent를 지정한다.
-
-### inspect.scenario.json — 무엇을 확인할지
-
-다음 시나리오는 사용자 세션 번호와 일반 바탕화면 상태를 조회한다. 앱 실행, 포커스 변경, 키보드·마우스 입력은 수행하지 않는다.
-
-```json
-{
-  "schemaVersion": 1,
-  "id": "inspect-session",
-  "purpose": "입력 없이 사용자 세션과 일반 바탕화면 상태를 확인한다",
-  "roles": ["observer"],
-  "parameters": ["targetSession"],
-  "maximumSeconds": 30,
-  "steps": [
-    {
-      "id": "inspect",
-      "role": "observer",
-      "command": {"name": "inspect"},
-      "expect": [
-        {"path": "/observation/session", "op": "eq", "value": {"$ref": "/parameters/targetSession"}},
-        {"path": "/observation/desktop", "op": "eq", "value": "Default"},
-        {"path": "/observation/elevated", "op": "eq", "value": false}
-      ]
-    }
-  ]
-}
-```
-
-`command`는 Agent에 보낼 명령이고 `expect`는 관측 결과가 만족해야 할 조건이다. 여기서는 세 조건이 모두 맞아야 성공이다. `maximumSeconds`는 작업 시작과 정리를 포함한 전체 시간 상한이다.
-
-### lab.bindings.json — 어느 환경에서 실행할지
-
-```json
-{
-  "parameters": {"targetSession": 1},
-  "roles": {"observer": "target.run.json"}
-}
-```
-
-`targetSession`의 1은 앞서 `list`에서 확인한 실제 session 값으로 바꾼다. `target.run.json` 경로는 **이 bindings 파일이 있는 폴더 기준**이다.
-
-### target.run.json — 이번 작업의 대상과 허용 범위
+조작 PC의 `C:\MyProject\desktop\target.run.json`에 다음을 둔다.
 
 ```json
 {
   "protocolVersion": 2,
-  "runId": "inspect-001",
+  "runId": "gui-001",
   "machineId": "notebook-74",
   "role": "observer",
   "targetSession": 1,
   "expectedDesktop": "Default",
   "expiresAt": "REPLACE_WITH_FUTURE_ISO8601",
-  "maxSeconds": 30,
+  "maxSeconds": 600,
   "recovery": "R0",
   "allowInput": false,
   "windows": [],
@@ -184,150 +123,141 @@ C:\MyProject\tests\desktop\
     "owner": "TEST-PC\\tester",
     "requester": "coding-agent",
     "keyId": "lab-owner",
-    "scenarios": ["inspect-session"],
+    "scenarios": [],
     "actions": ["inspect", "heartbeat"],
     "productPermissions": [],
-    "evidence": {"retainHours": 24, "maxBytes": 67108864, "images": false},
+    "evidence": { "retainHours": 24, "maxBytes": 67108864, "images": false },
     "signature": ""
   }
 }
 ```
 
-실행 전에 다음을 실제 환경 값으로 바꾼다.
+설정할 값은 다음과 같다.
 
-| 항목 | 지정할 값 |
+| 필드 | 지정할 값 |
 |---|---|
-| `runId` | 매번 새 ID. 예: inspect-001 다음은 inspect-002. 사용한 ID는 재사용하지 않는다 |
-| `machineId` | list에 표시된 시험 PC의 ID |
-| `targetSession` | list의 session. bindings의 targetSession에도 같은 값을 지정한다. **run 파일에서는 0을 쓸 수 없다** |
-| `expiresAt` | 현재보다 미래의 시각. 전체 30초를 수용할 여유를 두고, 시간대가 포함된 ISO 8601 형식으로 지정한다 |
-| `delegation.owner` | 시험 PC의 실행 사용자. 시험 PC에서 whoami로 확인할 수 있다. JSON 안의 역슬래시는 두 번 적는다 |
+| `runId` | 사용하지 않은 새 작업 ID |
+| `machineId` | list에서 확인한 대상 머신 ID |
+| `targetSession` | list의 실제 session. run 설정에서는 0을 쓰지 않는다 |
+| `expiresAt` | 시간대가 포함된 미래 ISO 8601 시각 |
+| `delegation.owner` | 대상 PC의 실행 사용자. SSH의 whoami 등으로 확인한다 |
 
-expiresAt 값은 PowerShell에서 다음을 실행해 현재부터 10분 뒤의 UTC 시각을 얻을 수 있다. 출력한 값으로 `REPLACE_WITH_FUTURE_ISO8601`을 바꾼다.
+PowerShell에서 다음으로 15분 뒤 UTC 시각을 얻어 expiresAt에 넣을 수 있다.
 
 ```powershell
-[DateTimeOffset]::UtcNow.AddMinutes(10).ToString('o')
+[DateTimeOffset]::UtcNow.AddMinutes(15).ToString('o')
 ```
 
-R0는 입력 없는 관측용 구분이다. actions는 이 작업에서 허용하는 명령이며 heartbeat는 연결 감시에 필요하다. 현재 상시 연결 방식에서는 서명·인증 키를 만들 필요가 없고 signature는 빈 문자열로 둔다.
+이 예의 최대 작업 시간은 600초다. 현재 상시 Controller 경로는 개발용 위임 범위 검사를 사용하므로 서명 키를 만들 필요가 없고 signature는 빈 문자열이다. `scenarios: []`와 role 등은 현행 계약 호환용이며, 시나리오 파일을 작성하라는 뜻이 아니다. 이 설정 부담은 새 구조에서 단순화할 개발 항목이다.
 
-## 5. 시나리오를 검사하고 실행한다
+### 관측 요청과 응답
 
-조작 PC의 Server 폴더에서 먼저 파일만 검사한다.
+`C:\MyProject\desktop\inspect.json`:
 
-```text
-.\Controller.exe scenario-check C:\MyProject\tests\desktop\inspect.scenario.json C:\MyProject\tests\desktop\lab.bindings.json
+```json
+{ "name": "inspect" }
 ```
 
-`valid: true`가 반환되면 문법·역할·설정의 정적 검사를 통과한 것이다. 이 명령은 Agent에 접속하거나 앱·입력을 조작하지 않는다.
+조작 PC의 Server 폴더에서 실행한다.
 
-실행 준비가 끝나면 다음을 실행한다. **begin/request/end를 따로 실행할 필요가 없다.**
-
-```text
-.\Controller.exe scenario-run C:\MyProject\tests\desktop\inspect.scenario.json C:\MyProject\tests\desktop\lab.bindings.json
+```powershell
+.\Controller.exe begin notebook-74 C:\MyProject\desktop\target.run.json
+.\Controller.exe request notebook-74 C:\MyProject\desktop\inspect.json
 ```
 
-Controller가 대상 PC의 작업 시작 → inspect → expect 판정 → 작업 종료·정리까지 수행한다. 명령이 끝날 때까지 기다린 뒤 결과를 확인한다. Agent는 연결을 유지하므로 다음 시나리오에서도 다시 실행할 필요가 없다.
+`request`는 JSON 응답을 출력하고 종료한다. **개별 request CLI의 정상 종료로 작업이 끝나지는 않는다.** Controller가 내부 heartbeat를 유지하며 같은 작업에 후속 request를 보낼 수 있다. 현재 작업은 maxSeconds·expiresAt 안에서만 유지된다.
 
-## 6. 결과를 확인한다
-
-scenario-run 응답은 JSON이다. 성공하려면 `ok: true`와 함께 **`data.verdict: "Pass"`**가 있어야 한다. ok는 요청 처리 여부이며 시험 통과 판정과 다르다.
-
-| 응답 항목 | 확인할 내용 |
+| 응답 필드 | 의미 |
 |---|---|
-| `data.executionId` | 이번 시나리오 실행을 식별하는 ID |
-| `data.verdict` | 전체 Pass / Fail |
-| `data.steps` | 단계별 Pass / Fail / NotRun. NotRun은 실행하지 않은 단계다 |
-| `data.cleanup` | 시작을 시도한 역할별 정리 결과. verified가 true인지 확인한다 |
-| `data.evidenceDirectory` | 실행 기록을 저장한 폴더 |
+| `ok` | Controller 요청 처리 여부 |
+| `data.accepted`, `data.executed` | 명령 수락·실행 여부 |
+| `data.errorCode` | 명령 실행 오류. 정상은 `None` |
+| `data.evidence.observation` | inspect로 얻은 세션·바탕화면·모니터·창 정보 |
+| `data.evidence.frames` | 관측한 창별 프레임·실제 창 식별값 |
+| `data.verified` | 기존 명령 내부의 확인 값. 제품 기능 성공 판정이 아님 |
 
-report.json은 Controller의 stateRoot 아래 저장된다. 이번 배치에서는 다음 위치다.
+외부 요청의 ok가 true여도 내부 명령 오류가 있을 수 있다. accepted·executed·errorCode와 실제 관측값을 함께 읽는다. 에이전트가 관측 결과로 다음 동작을 결정하고 필요한 request를 보낸다.
 
-```text
-C:\DesktopTestDriver\Server\state\scenarios\실행ID\
-  plan.json         실행한 시나리오
-  execution.json    사용한 환경 설정
-  events.jsonl      명령별 관측 결과와 판정
-  report.json       최종 판정과 정리 결과
+이 예는 windows가 비어 있어 앱 창을 반환하지 않는다. 현재 코드에서 앱을 조회·조작하려면 run 설정의 windows에 실제 앱 경로·SHA-256·창 제목을 등록해야 한다. 사전 등록 없이 처음 보는 창을 탐색하는 기능은 개발 항목이다.
+
+### 현재 GUI 명령과 제약
+
+| 기능 | 현재 명령 | 필요한 정보 |
+|---|---|---|
+| 창·세션 조회 | `inspect` | run에 등록한 창 범위 |
+| UI 정보 읽기 | `controls` | 관측에서 얻은 `expectedWindow` |
+| 포커스·창 이미지 | `focus`, `snapshot` | `expectedWindow`, `frameId` |
+| 요소 클릭 | `click-control` | 실제 창 title 또는 hwnd, `automationId` |
+| 창 좌표 클릭·이동 | `click-window`, `move-window` | 실제 창 title 또는 hwnd, 창 내부 좌표 |
+| 문자 입력 | `type-window` | 실제 창 title 또는 hwnd, text |
+| 낮은 수준 입력 | `click`, `drag`, `wheel`, `text`, `chord`, `key-down`, `key-up` | 최신 프레임·창 식별과 입력값 |
+| 도구 입력 해제 | `release-all` | 현재 작업 |
+
+예를 들어 입력 설정을 갖춘 작업에서 다음 내용을 명령 파일로 보내면 해당 요소를 클릭한다. 제목과 AutomationId는 실제 관측값으로 대체한다. `click-control`은 내부에서 창을 다시 조회하고 필요하면 포커스를 옮긴다.
+
+```json
+{
+  "name": "click-control",
+  "title": "<관측한 창 제목>",
+  "automationId": "<관측한 버튼 AutomationId>"
+}
 ```
 
-이 예제의 Pass는 선언한 사용자 세션·바탕화면 상태를 관측하고 작업 정리를 확인했다는 뜻이다. 앱 입력 성공까지 검증한 것은 아니다. 버튼이나 텍스트를 시험할 때는 입력 후 앱의 상태·UI 정보·결과 파일을 확인하는 조건을 둔다.
+위 R0 예제는 입력을 허용하지 않는다. 현재 입력·앱 실행에는 allowInput, 등록한 앱·창·명령·키 범위와 R1 및 RecoveryEvidence 필드가 필요하다. 이것은 현행 검증기의 제약이며 새 설계의 필수 준비 절차로 삼지 않는다. 자세한 현재 필드는 [작업 설정 템플릿](inventory/run.template.json)을 참고한다. 필요한 설정이 바뀌면 현재 작업을 닫고 새 runId로 연다.
 
-명령 종료 코드는 성공 0, 실패 1이다. scenario-check 통과만으로 실제 시험을 통과한 것은 아니다. 실행 전 설정·연결 확인에서 거부되면 report.json 없이 오류 응답만 반환될 수도 있다.
-
-## 자신의 앱을 시험할 시나리오를 만든다
-
-코딩 에이전트에게는 별도 문서인 **[시나리오 작성 규약](docs/scenario-authoring.md)**을 전달한다. 이 문서에 전체 문법, 지원 명령, 관측값 참조, 대상 선택, 조건 대기, 판정 규칙과 예제가 있다.
-
-다음 지시문을 사용하면 된다.
-
-> DesktopTestDriver의 `docs/scenario-authoring.md`를 읽고, 이 프로젝트의 시험할 동작에 맞는 시나리오·bindings·run 파일을 작성하라. Controller·Agent 소스는 수정하지 마라. 실제 앱과 창을 관측해 대상을 식별하고, 입력 후 앱 결과를 확인하는 조건을 포함하라. 정적 검사와 실제 실행 결과를 구분하라.
-
-앱 실행·키보드·마우스를 쓰는 run 설정에는 허용할 앱 경로·파일 hash·창·키·명령을 지정한다. `allowInput: true`와 **R1 이상의 입력 해제·화면 복귀 준비 증거**가 필요하다. 위 R0 예제에서 allowInput만 true로 바꾸는 것으로는 입력 시험을 준비할 수 없다. 자세한 run 필드는 [작업 설정 템플릿](inventory/run.template.json)과 작성 규약을 따른다.
-
-| 할 수 있는 일 | 명령 예 |
-|---|---|
-| 등록한 프로그램 실행 | launch |
-| 창·버튼·텍스트 등 UI 정보 조회 | inspect, controls |
-| 창 선택·화면 이미지 수집 | focus, snapshot |
-| 텍스트·키보드 입력 | type-window, text, chord |
-| 마우스 이동·클릭·드래그·휠 | move-window, click-control, click-window, drag, wheel |
-| 앱이 기록한 결과 파일 읽기 | read-artifact |
-
-지원 범위는 일반 사용자 바탕화면의 앱이다. 자연어를 자동 해석하거나 관리자 UI·UAC·SAS·잠금 화면을 조작하는 기능, 임의 셸 명령 실행은 제공하지 않는다.
-
-## 중단과 종료
-
-첫 명령 오류·조건 실패·시간 초과에서 뒤 단계는 실행하지 않고 정리한다. 입력과 시나리오는 자동 재실행하지 않는다. 실패한 실행의 기록을 확인하고 원인과 준비를 보완한 뒤 새 runId로 실행한다.
-
-시나리오 실행 중에 중단하려면 실행 명령 터미널에서 Ctrl+C를 누르거나, 조작 PC의 별도 터미널에서 다음을 실행한다.
+이미지는 `snapshot`으로 얻은 프레임 ID를 이용해 현재 제공되는 저장 명령으로 조작 PC에 가져올 수 있다. 아래 ROOT는 Controller의 실제 stateRoot 경로다.
 
 ```text
+Controller.exe agent-save-frame ROOT MACHINE FRAME_ID OUTPUT_PNG
+```
+
+캡처·이미지 읽기에는 현재 evidence.images와 snapshot/read-frame 등의 명령 허용이 필요하다. 현재 snapshot은 전경 창을 요구하므로 관측만으로 모든 창을 캡처할 수 있는 것은 아니다. 새 구조에서는 원격 Agent.exe가 캡처 파일을 만들고 에이전트가 기존 SSH 파일 전송으로 가져오는 흐름을 제공할 계획이다.
+
+## 현재 작업의 종료와 오류 처리
+
+필요한 개별 요청을 마치면 조작 PC에서 작업을 닫는다.
+
+```powershell
 .\Controller.exe end notebook-74
 ```
 
-시나리오가 여러 PC를 사용하는 경우에도 그중 한 PC에 end를 요청하면 해당 시나리오 전체를 중단한다. `cancellationRequested: true`는 중단 요청의 접수이며 정리 완료를 뜻하지 않는다. report.json에서 정리 결과를 확인한다. 실행 요청 CLI가 끊겨도 상시 Controller가 정리를 수행한다.
+현재 end는 입력 해제와 소유 앱 종료 등 기존 정리를 수행하며 상시 Agent는 유지한다. 응답의 clean·normalDesktop과 runId를 확인한다. **현재는 일반 명령 오류·단절·만료로도 작업과 소유 앱이 정리될 수 있다.** 따라서 제품 앱을 유지한 채 오류를 재관측하려면 D06·D09 구현이 필요하다.
 
-| 원하는 동작 | 조작 PC에서 실행할 명령 |
+| 원하는 동작 | 현재 명령 |
 |---|---|
-| 연결된 Agent 조회 | `.\Controller.exe list` |
-| 작업 중단·정리, Agent는 유지 | `.\Controller.exe end notebook-74` |
-| 작업 정리를 마친 Agent도 종료 | `.\Controller.exe exit notebook-74` |
-| Controller 종료 | `.\Controller.exe shutdown` |
+| 연결된 Agent 조회 | `Controller.exe list` |
+| 작업 종료·정리 | `Controller.exe end MACHINE` |
+| 대상 Agent 종료 | `Controller.exe exit MACHINE` |
+| 저장된 작업 결과 조회 | `Controller.exe result RUN_ID` |
+| Controller 종료 | `Controller.exe shutdown` |
 
-Agent까지 종료할 때는 시나리오 중단과 정리 완료를 먼저 확인한 뒤 exit를 실행한다. Controller가 종료되거나 연결이 끊기면 Agent도 진행 작업을 중단·정리한다. 정리를 확인하지 못한 상태에서는 새 시험을 시작하지 않는다.
+현재 result는 내부 실행·정리 기록 조회이며 제품 시험의 성공 판정이 아니다. 응답 유실 시 입력을 자동으로 반복하지 말고 작업 상태와 화면을 확인한다. 호출자가 지정한 요청 ID로 실행 결과를 조회하는 계약은 개발 항목이다.
 
-## 연결이 안 되거나 실행이 거부될 때
+## 현재 오류를 해석하는 방법
 
-| 증상 | 먼저 확인할 내용 |
+| 증상·오류 | 확인할 내용 |
 |---|---|
-| list가 실패한다 | 같은 Server 폴더의 Controller가 실행 중인지, 같은 사용자로 관리 명령을 실행하는지 확인한다 |
-| list의 data가 비어 있다 | Agent 실행, 두 설정의 host/port, 조작 PC 방화벽을 확인한다 |
-| scenario-check가 실패한다 | JSON 문법, 세 파일의 역할 이름, bindings 기준 run 경로, run 설정을 확인한다 |
-| Expired | expiresAt이 충분히 미래인지 확인한다 |
-| ReservationConflict | 이미 실행 중인 작업, 중복 Agent, 재사용한 runId 또는 세션 설정 불일치를 확인한다 |
-| RecoveryRequired | 입력을 허용하는 작업에 필요한 R1 이상의 준비·복귀 증거가 있는지 확인한다 |
-| AuthenticationFailed | 상태 폴더가 현재 실행 사용자 전용인지 확인한다. 다른 사용자가 만든 폴더를 stateRoot로 재사용하지 않는다 |
-| report의 verdict가 Fail이다 | 처음 실패한 단계와 events.jsonl, cleanup 결과를 확인한다 |
+| list 실패·빈 목록 | Controller·Agent 기동, 설정, 포트 연결 |
+| `Expired` | expiresAt·maxSeconds와 현재 시각 |
+| `ReservationConflict` | 진행 중 작업, 중복 Agent, 사용한 runId, 실제 세션, 정리 차단 상태 |
+| `RecoveryRequired` | 현재 입력 검증기가 요구하는 설정·복구 증거 필드 |
+| `WindowChanged`, `StaleFrame` | 대상 창·배치 변경과 프레임 유효 시간. 재관측 필요 |
+| `ObservationUnavailable` | UI 정보·캡처·결과 조회가 가능한지 |
+| `AuthenticationFailed` | 상태 폴더·IPC 접근 계정과 권한 |
+| `CleanupIncomplete` | 도구 입력·소유 자원의 실제 정리 상태 |
 
-실패한 상태에서 같은 시험을 반복하거나 상태 폴더를 지워 기록을 초기화하지 않는다. 수집한 증거로 원인을 확인한 뒤 영향받은 시험을 새 회차로 준비한다.
+현재 처리 경로에서는 오류 뒤 작업이 이미 닫혔을 수 있다. 상태를 확인한 뒤 다음 요청 또는 새 작업 여부를 결정한다. 이 동작을 에이전트 친화적인 요청 오류·재관측으로 바꾸는 내용은 개발 문서에 있다.
 
-## 추가 사용법과 현재 상태
+## 기존 기능과 문서의 위치
 
-**수동 점검:** 시나리오 대신 명령 하나씩 보낼 수도 있다. `begin MACHINE RUN_JSON`으로 작업을 시작하고, `request MACHINE COMMAND_JSON`으로 명령을 보내고, `end MACHINE`으로 종료한다. 예를 들어 command.json이 `{"name":"inspect"}`이면 창과 세션을 조회한다. 시나리오 실행 중에는 이 수동 명령을 섞지 않는다. 일반 자동화에는 위 scenario-run 흐름을 사용한다.
+기존 `scenario-check`·`scenario-run`과 제품 Pass/Fail 판정 코드는 남아 있지만 기본 사용 방향에서 분리한다. 전용 시나리오를 새로 작성하는 것을 도구 사용의 선행 작업으로 안내하지 않는다. 기존 시나리오 사용법은 호환 기능을 확인할 때만 참고한다.
 
-**SSH 배포:** 직접 복사하는 대신 선택적인 Python SSH 배포 어댑터와 Broker로 파일 전송·사용자 세션의 Agent 기동을 자동화할 수 있다. 이 경우에만 Python·SSH·Broker가 추가로 필요하다. Broker를 게시하는 명령은 다음과 같다. 기동 후 작업 제어는 수동 복사 방식과 동일한 Controller↔Agent TCP 경로다.
+SSH·Python·Broker를 이용한 기존 배포·기동 코드도 있다. 현재 Controller 경로의 GUI 명령 전송은 여전히 TCP다. 기존 Agent.exe에 추가할 요청 모드와 GUI 실행 모드의 연결은 별도 구현 작업이다.
 
-```text
-dotnet publish src/Client.Broker/Client.Broker.csproj -c Release -r win-x64 --self-contained false -o dist/Client.Broker
-```
+현재 지원 코드는 빌드 확인 이력이 있지만 실제 데스크톱 입력·캡처·다중 머신·장애 동작 확인은 남아 있다. 이 문서의 예시는 제품 E2E 시험을 통과했다는 기록이 아니다. 이번 정리는 문서 변경이며 실행 코드의 동작을 바꾸지 않는다.
 
-**프로세스 수:** 머신당 상시 Agent는 하나다. 작업 중에만 별도의 작업 실행부와 watchdog이 추가되고, UI 조회 시 임시 보조 프로세스가 생길 수 있다. 이들은 도구가 관리하며 작업 종료 후 상시 Agent가 남는다. 한 머신에서 동시에 한 작업을 실행하고 여러 머신을 함께 사용할 수 있다.
-
-현재 구현은 빌드까지 확인했다. 시나리오 실행·다중 머신·실제 입력·장애 복귀 검증은 아직 수행하지 않았다. 이 문서의 실행 절차와 예제는 사용법이며, 해당 시험의 PASS 기록이 아니다.
-
-| 더 알아볼 내용 | 문서 |
+| 문서 | 용도 |
 |---|---|
-| 코딩 에이전트가 따라야 할 시나리오 문법 | [시나리오 작성 규약](docs/scenario-authoring.md) |
-| Controller·Agent의 실행·통신 계약 | [Controller / Agent 계약](docs/controller.md) |
-| 복합 제품 시험에 부족한 기능과 추가 개발 항목 | [사용 준비 상태와 추가 개발 항목](docs/readiness-and-gaps.md) |
+| [원격 GUI 조작 설계와 구현 계획](docs/agent-driven-desktop-control.md) | 사용 목적·책임 구분·요청 예시·변경 코드·완료 기준 |
+| [기존 Controller / Agent 계약](docs/controller.md) | 현재 호환 경로와 기존 통신 구조 확인 |
+| [기존 시나리오 작성 규약](docs/scenario-authoring.md) | 남아 있는 시나리오 기능의 문법 참고 |
