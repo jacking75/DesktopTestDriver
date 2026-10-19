@@ -8,6 +8,8 @@
 
 이 README는 앞으로 개발할 구조와 사용 방향을 설명한다. 기존 GUI 코드를 이 구조로 바꾸는 단계이며, 아래 요청 명령과 응답 형식은 아직 구현 전이다.
 
+**도구를 호출할 코딩 에이전트에게는 [사용 규약](docs/agent-usage.md)을 전달한다.** 이 문서에 명령·필드·응답·오류 후 행동과 처음부터 한 번 조작하는 예가 있다. 구현자는 [설계·구현 계획](docs/agent-driven-desktop-control.md)의 제거 범위와 완료 기준을 함께 따른다. 사용 규약도 현재 배포본에서 실행 가능한 안내가 아니라 구현할 목표 계약이다.
+
 ## 역할
 
 | 작업 | 담당 |
@@ -52,7 +54,7 @@ flowchart LR
 
 ## 요청과 응답
 
-다음은 구현할 요청 방식의 예다. 코딩 에이전트가 기존 SSH로 원격 머신에 요청 파일을 작성하고 실행한다. 세션·창·요소 식별값은 실제 관측 결과에서 얻는다.
+다음은 구현할 요청 방식의 예다. 코딩 에이전트가 기존 SSH로 원격 머신에 요청 파일을 작성하고 실행한다. 세션·창·요소 식별값은 실제 관측 결과에서 얻는다. 변경 입력 전에는 별도의 focus 요청으로 대상 창을 활성화한다.
 
 ```powershell
 .\Agent.exe --request .\click.json
@@ -62,6 +64,7 @@ flowchart LR
 
 ```json
 {
+  "apiVersion": 1,
   "requestId": "click-001",
   "controlSessionId": "control-001",
   "operation": "click",
@@ -76,11 +79,14 @@ flowchart LR
 
 ```json
 {
+  "apiVersion": 1,
   "requestId": "click-001",
   "controlSessionId": "control-001",
   "operation": "click",
   "status": "completed",
-  "data": { "windowId": "win-007", "inputEventsSent": 2 }
+  "data": { "windowId": "win-007", "inputEventsSent": 2 },
+  "error": null,
+  "observedAt": "2026-10-20T06:30:00Z"
 }
 ```
 
@@ -102,8 +108,8 @@ flowchart LR
 
 ## 개발 상태와 문서
 
-현재 저장소에는 기존 GUI 조작 코드와 Controller·시나리오 실행 코드가 남아 있다. 새 GUI 요청 경로를 구현하면서 재사용할 GUI 기능을 추출하고, 중앙 Controller 의존성과 시나리오 실행·제품 판정 계층을 분리한다.
+현재 저장소에는 기존 GUI 조작 코드와 Controller·시나리오 실행 코드가 남아 있다. 새 GUI 요청 경로를 구현하면서 재사용할 GUI 기능을 추출하고, 최종 제품 경로에서 중앙 Controller 의존성과 시나리오 파서·실행기·제품 판정기를 제거한다. 시나리오를 선택적 사용자 기능으로 유지하지 않는다.
 
 이 README의 새 명령을 현재 실행 가능한 사용법으로 취급하지 않는다. 실제 구현·데스크톱 연동 확인이 완료되면 설치와 사용 명령을 갱신한다.
 
-구체적인 실행 모드, 요청 예시, 변경할 코드, 구현 순서와 완료 기준은 [원격 GUI 조작 설계와 구현 계획](docs/agent-driven-desktop-control.md)에 정리한다.
+사용 문서의 예시가 실제 구현과 일치하고, 기존 코드를 모르는 호출자가 그 문서만 보고 SSH에서 관측·조작·이미지 확인·오류 후 대응을 수행할 수 있어야 사용 가능한 배포본으로 표시한다.
