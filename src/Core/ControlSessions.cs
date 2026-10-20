@@ -16,8 +16,9 @@ public sealed class ControlSession(SessionInfo info)
     public SessionInfo Info = info;
     public readonly object Mutation = new();
     public readonly SemaphoreSlim Queue = new(1);
+    public readonly SemaphoreSlim Releasing = new(1);
     public CancellationTokenSource Permit = new();
-    public bool CloseRequested;
+    public volatile bool CloseRequested;
     public string CloseReason = "SessionClosed";
     public long LastActivity = Stopwatch.GetTimestamp();
     public void Touch() { LastActivity = Stopwatch.GetTimestamp(); Info = Info with { IdleExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Info.IdleSeconds) }; }
@@ -51,8 +52,8 @@ public sealed class ControlSessions(StateStore store, string machine, int intera
     public void Check(ControlSession s, bool change)
     {
         if (s.Info.State == "expired") throw new GuiException("SessionExpired");
-        if (change && (s.Info.State != "active" || s.Permit.IsCancellationRequested)) throw new GuiException("SessionBlocked");
-        if (!change && s.Info.State is "closed" or "expired") throw new GuiException("SessionClosed");
+        if (s.Info.State == "closed") throw new GuiException("SessionClosed");
+        if (change && (s.CloseRequested || s.Info.State != "active" || s.Permit.IsCancellationRequested)) throw new GuiException("SessionBlocked");
         if (change && s.Info.Mode == "observe") throw new GuiException("ReadOnlySession");
     }
     public IEnumerable<ControlSession> Active => sessions.Values;

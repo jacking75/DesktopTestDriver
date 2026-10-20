@@ -154,7 +154,13 @@ public sealed class AgentHost
                     }
                     finally { await CloseAll("ControllerDisconnected"); }
                 }
-                catch (Exception e) when (!lifetime.IsCancellationRequested)
+                catch (Exception) when (lifetime.IsCancellationRequested)
+                {
+                    // Closing a peer can fault a pending heartbeat with AgentDisconnected
+                    // rather than OperationCanceledException. Shutdown still owns cleanup.
+                    break;
+                }
+                catch (Exception e)
                 {
                     Console.Error.WriteLine(GuiProtocol.Encode(new { code = e is GuiException g ? g.Code : "ControllerDisconnected", exceptionType = e.GetType().Name }));
                     await CloseAll("ControllerDisconnected"); await Task.Delay(500, lifetime.Token);

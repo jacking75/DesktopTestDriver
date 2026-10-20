@@ -87,9 +87,15 @@ switch ($Action) {
     }
     'Restore' {
         if (-not $BackupDirectory) { throw 'BackupDirectory is required.' }
-        Stop-Role
         $config=Get-Content -LiteralPath (Join-Path $BackupDirectory 'configuration.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($name in @('identity.pfx','identity.cer')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $BackupDirectory $name) -PathType Leaf)) { throw "Incomplete backup: $name is required." }
+        }
+        Stop-Role
         foreach ($name in @('identity.pfx','identity.cer','peers.json')) { $source=Join-Path $BackupDirectory $name; if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $config.stateDirectory $name) -Force } }
+        # An absent peer file is the empty registration snapshot, not permission to keep newer trust.
+        $peers=Join-Path $config.stateDirectory 'peers.json'
+        if (-not (Test-Path -LiteralPath (Join-Path $BackupDirectory 'peers.json')) -and (Test-Path -LiteralPath $peers)) { Remove-Item -LiteralPath $peers }
         Copy-Item -LiteralPath (Join-Path $BackupDirectory 'configuration.json') -Destination $Configuration -Force
         Write-Output 'Configuration and peer identity restored. Start explicitly after verifying the configuration.'
     }

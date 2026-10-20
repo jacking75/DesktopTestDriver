@@ -1,14 +1,8 @@
 # 코딩 에이전트용 DesktopTestDriver 사용 규약
 
-**문서 상태: API 1 구현 규약이다. 실제 화면·두 PC·선택 제품 시험의 확인 범위는 [13번 계획](../docs_working/GUI-사용매뉴얼-기반-상세구현계획-13.md)의 체크 상태와 증거를 따른다.**
+이 문서는 Controller.exe로 Windows PC의 GUI를 관측·조작하는 코딩 에이전트용 API 1 사용법이다.
 
-이 문서는 도구를 호출하는 코딩 에이전트가 읽는 문서다. 구조 변경과 구현 순서는 [상세 구현 계획 13번](../docs_working/GUI-사용매뉴얼-기반-상세구현계획-13.md)을 따른다. 사용 흐름은 [11번 매뉴얼](../docs_working/간단한-GUI-테스트-사용매뉴얼-11.md)과 [12번 매뉴얼](../docs_working/RemoteAssist-E2E-테스트-사용매뉴얼-12.md)을 기준으로 한다. 관련 문서가 서로 다르면 구현 중 임의로 해석하지 말고 계약과 예시를 함께 수정한다.
-
-## 코딩 에이전트에게 전달할 지시
-
-> DesktopTestDriver의 `docs/agent-usage.md`를 읽고 대상 PC의 GUI를 관측하거나 조작하라. 코딩 에이전트와 같은 머신에서 Controller.exe를 실행한다. Controller로 연결된 Agent를 조회하고 조작할 machineId를 선택한다. 먼저 --help와 --status로 설치된 버전·지원 기능을 확인하라. 창·요소·세션 ID는 실제 응답에서 얻고, 한 번의 GUI 명령씩 요청하라. 응답의 completed는 제품 성공이 아니다. 화면·UI·로그를 관측해 다음 행동을 결정하라. 변경 요청의 응답을 잃으면 같은 입력을 자동 재실행하지 말고 요청 결과를 조회하라. 시나리오·expect·bindings·run 파일은 만들지 마라.
-
-사용 환경에서 코딩 에이전트와 같은 머신의 Controller.exe 경로, 이 문서, 관측하거나 조작할 대상 PC의 정보를 전달한다. Agent.exe의 설치·대화형 데스크톱 기동은 환경 준비 작업이다. Controller와 Agent 두 프로그램을 사용하며, 사용자 요청 명령은 Controller에만 있다. 에이전트가 GUI 명령을 보낼 때마다 Agent를 재설치하거나 새로운 SSH 연결 도구를 만들지 않는다.
+사용 전에 Controller.exe의 실제 경로, 대상 PC 정보, 수행할 작업을 확인한다. Controller와 대상 PC의 Agent가 기동·연결되어 있어야 한다. 최초 설정이 필요하면 [최초 설정과 상주 실행](#최초-설정과-상주-실행)을 따른다.
 
 ## 먼저 알아야 할 실행 방식
 
@@ -18,7 +12,7 @@
 - 제어 세션은 여러 명령을 이어서 조작하는 문맥이다. 시험 순서·성공 조건을 담지 않는다.
 - Agent는 대상 PC의 활성 콘솔·일반 사용자 바탕화면에서 실행한다. 로그인 세션·UAC·잠금·RDP 지원 여부를 추정하지 않고 --status의 결과를 따른다.
 
-대상 PC는 작업 PC 자체와 원격 PC를 모두 포함한다. 작업 PC의 GUI도 조작하려면 그 PC에 Agent를 함께 실행한다. 12번 매뉴얼에서는 작업 PC와 PC A가 같은 머신이며, PC A의 조작 세션과 PC B의 관측 전용 세션을 구분한다. 원격 파일 작업에는 기존 SSH를 사용하고 작업 PC의 파일 작업에는 일반 로컬 명령을 사용한다.
+대상 PC는 작업 PC 자체와 원격 PC를 모두 포함한다. 작업 PC의 GUI도 조작하려면 그 PC에 Agent를 함께 실행한다. 여러 PC를 사용할 때는 PC별로 조작 세션과 관측 전용 세션을 선택한다. 원격 파일 작업에는 기존 SSH를 사용하고 작업 PC의 파일 작업에는 일반 로컬 명령을 사용한다.
 
 여러 머신은 Controller에 연결된 machineId로 구분한다. 세션을 열 때 대상을 지정하고 이후 controlSessionId가 해당 머신에 묶인다. SSH 연결은 파일·로그·프로세스 등의 별도 작업에 사용한다. 도구에 여러 머신의 실행 계획이나 barrier를 보내지 않는다.
 
@@ -75,15 +69,15 @@
 | 필드 | 의미 |
 |---|---|
 | `agentRunning`, `interactiveSessionId`, `desktop` | GUI 실행부와 실제 Windows 데스크톱 세션 |
-| `supportedOperations` | 이 배포본에서 실제 구현·지원하는 작업 이름 배열 |
+| `supportedOperations` | 지원하는 작업 이름 배열 |
 | `captureTargets` | 지원하는 캡처 범위. 예: window |
 | `maxRequestBytes` | 한 요청의 최대 UTF-8 바이트 수 |
 | `maxCommandMilliseconds` | 개별 GUI 요청의 최대 실행 시간 |
-| `maxStopMilliseconds` | 실행 중인 입력 작업의 중단 확인 한도. 초기 기본값 3000밀리초 |
+| `maxStopMilliseconds` | 실행 중인 입력 작업의 중단 확인 한도. 기본값 3000밀리초 |
 | `requestRetentionSeconds` | 완료·실패·미확정 요청 기록의 최소 보관 기간 |
 | `maxHoldMilliseconds` | 도구가 키·버튼을 계속 누를 수 있는 최대 시간 |
 
-구현 전인 작업을 supportedOperations에 넣지 않는다. 문서에 있는 작업이어도 현재 배포본이 지원하지 않으면 호출하지 않는다. ControllerUnavailable·AgentDisconnected·AgentUnavailable·NoInteractiveSession·UnsupportedDesktop 등 실제 원인을 읽고 환경 준비 또는 지원 범위를 확인한다. 이 문서만 보고 잠금 해제·권한 상승 같은 별도 동작을 시도하지 않는다.
+요청할 작업이 supportedOperations에 있는지 확인한다. ControllerUnavailable·AgentDisconnected·AgentUnavailable·NoInteractiveSession·UnsupportedDesktop 등 실제 원인을 읽고 환경 준비 또는 지원 범위를 확인한다. 이 문서만 보고 잠금 해제·권한 상승 같은 별도 동작을 시도하지 않는다.
 
 ## 단일 요청의 형식
 
@@ -100,7 +94,7 @@
 
 | 필드 | 규칙 |
 |---|---|
-| `apiVersion` | 새 GUI 요청 API 버전. 정수 1. 기존 통신 코드의 Wire.Version과 별개 |
+| `apiVersion` | GUI 요청 API 버전. 정수 1 |
 | `requestId` | 세션 안에서 새 작업마다 생성하는 ID. 영문·숫자·하이픈·밑줄 1~80자. 같은 작업의 결과 조회·중복 요청에는 같은 ID 사용 |
 | `controlSessionId` | --session-open에서 받은 실제 ID. Controller가 이 ID로 대상 machineId를 결정하며 요청마다 머신 이름을 다시 쓰지 않음 |
 | `operation` | --status가 지원한다고 반환한 작업 이름 |
@@ -161,7 +155,7 @@ windowId와 elementId는 불투명한 도구 식별값이다. 값의 내부 구�
 
 ## 작업별 인자와 결과
 
-아래는 API 1 작업 계약이다. 초기 배포에서 빠진 작업은 지원 목록에서 제외하고 UnsupportedOperation으로 거부한다. arguments에 표에서 정하지 않은 실행 문법을 추가하지 않는다.
+아래는 API 1 작업 계약이다. 지원하지 않는 작업은 UnsupportedOperation으로 거부한다. arguments에는 표에 정의한 인자만 사용한다.
 
 | operation | arguments | data의 핵심 |
 |---|---|---|
@@ -193,7 +187,7 @@ capture는 UI 요소 조회와 독립적으로 수행한다. 이미지 전달까
 
 캡처는 Agent 촬영 완료·상주 Controller의 수신/검증·로컬 최종 파일 확정·공개 응답 저장 순서로 처리한다. 촬영만 끝났거나 전송에 실패한 결과는 completed가 아니다. CLI가 종료되어도 상주 Controller가 원래 제한 시간 안에서 처리·결과 저장을 맡는다. 실패가 확정된 캡처를 재조회해 새로 촬영하거나 전송하지 않는다. 재시작 후 이미 저장된 파일은 원래 요청·경로·해시를 검증한 경우에만 성공 결과로 복원한다.
 
-text는 1~4096자의 Unicode 문자열이며 Enter·Tab 같은 제어 키는 key 또는 chord로 보낸다. keys는 중복 없는 키 이름 배열 1~8개다. 키 이름은 CTRL·ALT·SHIFT·WIN·ENTER·TAB·ESC·BACKSPACE·DELETE·SPACE·LEFT·RIGHT·UP·DOWN·HOME·END·PAGEUP·PAGEDOWN·A~Z·0~9·F1~F24를 사용한다. 다른 키는 지원한다고 추정하지 않는다. 길게 누르는 down은 maxHoldMilliseconds 안에 해제되므로 일반 조합은 chord를 사용한다.
+text는 UTF-16 코드 단위로 1~4096자의 유효한 Unicode 문자열이며 Enter·Tab 같은 제어 키는 key 또는 chord로 보낸다. keys는 중복 없는 키 이름 배열 1~8개다. 키 이름은 CTRL·ALT·SHIFT·WIN·ENTER·TAB·ESC·BACKSPACE·DELETE·SPACE·LEFT·RIGHT·UP·DOWN·HOME·END·PAGEUP·PAGEDOWN·A~Z·0~9·F1~F24를 사용한다. F01·F+1 같은 별칭은 거부한다. 다른 키는 지원한다고 추정하지 않는다. 길게 누르는 down은 maxHoldMilliseconds 안에 해제되므로 일반 조합은 chord를 사용한다.
 
 문자 수 상한은 요청 시간 안에 전부 입력된다는 보장이 아니다. 입력 소유 기록을 영속화하므로 긴 경로나 문장은 PC의 저장 장치 속도에 따라 5초를 넘을 수 있다. 정상 입력을 준비할 때는 짧은 문자열로 나누고 각 요청 완료를 확인한 뒤 다음 부분을 보낸다. 시간 초과가 발생한 요청은 원래 ID로 결과와 알려진 입력 수를 먼저 조회하고 실제 입력칸 값을 확인한다. 전체 문자열이나 같은 부분을 무조건 다시 보내지 않는다.
 
@@ -289,27 +283,15 @@ launch의 executable은 대상 Agent PC의 실행 파일 절대 경로, argument
 | RequestNotFound | 보관 기간·실행부 상태 확인. 입력이 실행되지 않았다는 증거로 취급하지 않음 |
 | completionUnknown 또는 응답 유실 | --request-status로 먼저 조회하고 필요하면 화면을 다시 관측. 자동 재입력 금지 |
 
-결과 조회가 running이면 같은 요청의 결과를 다시 조회한다. 완료 기록이 있으면 그 결과를 사용한다. 기존 ID의 같은 변경 요청을 다시 보내도 도구는 두 번째 입력을 수행하지 않아야 한다. 기록이 없거나 실행부가 중간에 종료됐다면 실제 제품 상태를 다시 보고 다음 행동을 결정한다.
+결과 조회가 running이면 같은 요청의 결과를 다시 조회한다. 완료 기록이 있으면 그 결과를 사용한다. 보관된 요청과 같은 ID·내용을 다시 보내면 기존 결과를 반환하며 입력을 반복하지 않는다. 기록이 없거나 실행부가 중간에 종료됐다면 실제 제품 상태를 다시 보고 다음 행동을 결정한다.
 
 읽기 관측은 새 requestId로 반복할 수 있다. 제품 준비 완료를 기다릴 때도 에이전트가 자신의 마감 시간을 두고 새 관측을 요청한다. 한 번의 클릭이 오류 없이 끝났다는 이유로 화면 결과를 확인하지 않거나 같은 클릭을 반복하지 않는다.
-
-## 문서만 보고 사용할 수 있는지 확인하는 기준
-
-문서를 동봉했다는 사실만으로 사용 가능하다고 선언하지 않는다. 로컬 검사만으로 실제 PC·두 PC에서의 사용 가능성을 확정하지 않는다. 배포 시 다음을 확인한다.
-
-1. 이 문서를 각 역할 패키지의 docs에 동봉하고 README·계획 안내·11/12/13번 문서를 저장소와 같은 상대 경로로 포함한다. Controller의 --help에서 실제 문서 위치를 안내한다. 패키지만 별도 폴더에 복사하여 상대 링크가 모두 열리는지 확인한다.
-2. 문서의 요청 예시를 GUI 요청 계약 검사에 사용한다. 실제 필드·타입·상태·종료 코드가 문서와 같아야 한다.
-3. 기존 코드와 개발 이력을 모르는 호출자가 도구 패키지·별도 검증용 앱·접속 정보만으로 Controller에서 같은 PC와 원격 PC의 Agent를 선택해 창 조회 → 요소 확인 → focus → 클릭 → 이미지 획득 → 세션 종료를 수행한다. ID는 매번 실제 응답에서 받는다.
-4. 없는 요소·관측 미지원·응답 유실·세션 만료를 넣어 문서의 복구 절차로 다음 행동을 결정할 수 있는지 확인한다.
-5. 읽기 요청에 부수 입력이 없고, GUI 오류 후에도 관측이 가능하며, 입력 해제와 앱 유지 정책이 문서와 같은지 확인한다.
-
-실패하면 사용 문서 또는 구현을 고쳐 다시 확인한다. 제품별 E2E 계획·제품 성공 판정은 이 확인 기준에 포함하지 않는다.
 
 ## 최초 설정과 상주 실행
 
 각 역할의 배포 폴더에서 PowerShell을 실행한다. `scripts/manage.ps1`는 .NET 10 Desktop Runtime을 확인한다. 상태 폴더는 역할별로 분리하며, 현재 사용자만 접근할 수 있도록 프로그램이 만든다. 비공개 개인키가 든 상태 폴더를 다른 PC에 복사하지 않는다. 상대에게 전달하는 파일은 공개 인증서 `identity.cer`뿐이다.
 
-같은 PC의 예는 다음과 같다. 경로는 실제 배포 위치로 바꾼다. 초기 설정은 기존 JSON을 날짜가 붙은 `.bak`으로 보존한다. 이미 초기화한 상태 폴더에는 새 인증서를 덮어쓰지 않는다.
+같은 PC의 예는 다음과 같다. 경로는 실제 배포 위치로 바꾼다. 초기 설정은 기존 JSON을 날짜가 붙은 `.bak`으로 보존한다. 주소·포트·머신 ID 등 설정값은 인증서를 만들기 전에 검사하며, 잘못된 값이면 새 설정·인증서를 생성하지 않는다. 이미 초기화한 상태 폴더에는 새 인증서를 덮어쓰지 않는다.
 
 ```powershell
 # Controller 폴더
@@ -334,12 +316,12 @@ Agent 시작은 로그인한 일반 사용자의 바탕화면에서 수행한다
 
 Controller.json은 `stateDirectory`, `listenAddress`, `port`를 사용한다. Agent.json은 `stateDirectory`, `machineId`, `controllerHost`, `controllerPort`, `controllerCertificate`(등록한 공개 인증서의 SHA-256), `interactiveSessionId`(0이면 시작한 콘솔 세션), `maxHoldMilliseconds`(기본·최대 1500), `maxStopMilliseconds`(기본·최대 3000)를 사용한다. 기본 배포 JSON은 설정 예시이며 Initialize로 실제 상태 경로와 인증서를 생성해야 한다. `Controller.exe --config FILE --status`처럼 별도 설정을 쓸 수도 있다. `--config FILE`은 첫 옵션으로 지정한다.
 
-설정·인증서 갱신 전에는 `-Action Backup`을 사용한다. 프로그램을 중단하고 비공개 상태 폴더 안의 새 backup 폴더에 설정과 인증서·등록 정보를 보존한다. `-Action Restore -BackupDirectory ...`는 중단 후 이 정보만 복원한다. 기존 요청 기록·세션을 지워 재실행을 허용하지 않는다. 복원 뒤 Start는 명시적으로 수행한다. 보관 기록과 개인키는 현재 사용자 권한으로 유지한다.
+설정·인증서 갱신 전에는 `-Action Backup`을 사용한다. 프로그램을 중단하고 비공개 상태 폴더 안의 새 backup 폴더에 설정과 인증서·등록 정보를 보존한다. `-Action Restore -BackupDirectory ...`는 필수 인증서 파일을 확인하고 프로그램을 중단한 뒤 이 정보를 복원한다. 백업에 peers.json이 없으면 등록이 없던 상태로 복원하므로 이후 추가한 등록도 제거한다. 기존 요청 기록·세션을 지워 재실행을 허용하지 않는다. 복원 뒤 Start는 명시적으로 수행한다. 보관 기록과 개인키는 현재 사용자 권한으로 유지한다.
 
-Controller 상태 폴더에는 공개 최종 응답 `request-*.json`과 세션 기록을, Agent 상태 폴더에는 실제 실행 결과·`held-input.json`·`applications.json`·원본 PNG를 보관한다. 중간 수락·실행 결과는 일반 로그가 아닌 이 제한된 저장소에 남는다. 결과는 최소 24시간 보관하며 현재 버전은 자동 삭제하지 않는다. 용량 부족 시 수락 기록을 기록하지 못하면 새 입력을 시작하지 않는다. 작업 PC에 저장한 최종 PNG의 보관은 호출자가 관리한다.
+Controller 상태 폴더에는 공개 최종 응답 `request-*.json`과 세션 기록을, Agent 상태 폴더에는 실제 실행 결과·`held-input.json`·`applications.json`·원본 PNG를 보관한다. 중간 수락·실행 결과는 일반 로그가 아닌 이 제한된 저장소에 남는다. 결과는 최소 24시간 보관하며 자동 삭제하지 않는다. 용량 부족 시 수락 기록을 기록하지 못하면 새 입력을 시작하지 않는다. 작업 PC에 저장한 최종 PNG의 보관은 호출자가 관리한다.
 
-캡처는 Windows Graphics Capture로 대상 창의 클라이언트 표면을 1:1로 얻는다. 다른 앱의 픽셀이나 Windows 필기용 마우스 통과 레이어를 이미지에 합성하지 않는다. 일반 불투명 창의 가림·최소화·숨김·모니터 밖 상태는 계속 거부하며 창을 몰래 앞으로 가져오지 않는다. 캡처 알림 테두리가 잠시 나타날 수 있다. HDR 색 정확도는 별도 확인 범위이며 현재 출력은 SDR PNG다. 요소 목록은 최대 1024개·깊이 16, UIA 보조 프로세스는 MTA 스레드에서 실행하고 최대 3000ms와 원래 요청의 남은 시간을 함께 적용한다. 값은 최대 65536자로 읽으며 암호는 반환하지 않는다. 동적으로 변한 화면은 새 관측으로 확인한다.
+캡처는 대상 창의 클라이언트 표면을 1:1로 얻으며 출력은 SDR PNG다. HDR 원본의 색 정확도는 보장하지 않는다. 다른 앱의 픽셀이나 Windows 필기용 마우스 통과 레이어를 이미지에 합성하지 않는다. 일반 불투명 창의 가림·최소화·숨김·모니터 밖 상태는 거부하며 창을 몰래 앞으로 가져오지 않는다. 캡처 알림 테두리가 잠시 나타날 수 있다. 캡처 대기 한도는 2200ms이며 원래 요청의 남은 시간도 함께 적용한다.
 
-캡처 구현 근거는 Microsoft의 [창 핸들 캡처 항목 생성 API](https://learn.microsoft.com/en-us/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createforwindow)와 [백그라운드 프레임 풀](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture.direct3d11captureframepool.createfreethreaded)이다. 캡처 보조 프로세스는 2200ms 안에 종료하며 원래 요청의 남은 시간도 함께 적용한다.
+요소 목록은 최대 1024개·깊이 16으로 제한하며 UI 조회 대기 한도는 3000ms다. 원래 요청의 남은 시간이 더 짧으면 그 시간을 적용한다. 값은 최대 65536자로 읽으며 암호는 반환하지 않는다. 동적으로 변한 화면은 새 관측으로 확인한다.
 
 앱 실행 직전에는 보호된 launch-intent 기록을 남긴다. 프로세스 생성 직후 장애로 session 앱의 실제 소유 정보를 확인하지 못하면 종료 성공을 추정하지 않으며 세션을 blocked로 유지한다. keep 앱은 유지하고, 알 수 없는 PID를 추측해 종료하지 않는다. 남은 소유 정보는 상태 폴더의 launch-intent 기록과 세션의 retainedProcessIds로 확인한다.

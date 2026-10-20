@@ -17,13 +17,72 @@ await Test("G01 strict contract and canonical duplicate identity", () =>
     Check(GuiProtocol.Fingerprint(GuiProtocol.Parse(sample)) == GuiProtocol.Fingerprint(GuiProtocol.Parse("""{"arguments":{},"operation":"windows","controlSessionId":"session","requestId":"one","timeoutMilliseconds":5000,"apiVersion":1}""")));
     Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":1,\"apiVersion\":1")); Reject(sample.Replace("windows", "scenario")); Reject(sample.Replace("{}", "{\"extra\":1}")); Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":2")); Reject(sample.Replace("{}", "null")); return Task.CompletedTask;
 });
+await Test("G01 function-key aliases cannot cause partial chord injection", () =>
+{
+    foreach (var alias in new[] { "F01", "F+1", "F 1" })
+        Reject(GuiProtocol.Encode(new { apiVersion = 1, requestId = "alias", controlSessionId = "session", operation = "chord", arguments = new { windowId = "window", keys = new[] { "F1", alias } } }));
+    return Task.CompletedTask;
+});
+await Test("G03 certificate pins accept uppercase hex and reject invalid configuration", () =>
+{
+    var folder = Root(); Directory.CreateDirectory(folder); var path = Path.Combine(folder, "Agent.json");
+    var valid = new AgentSettings(Path.Combine(folder, "state"), "test", "127.0.0.1", 32550, new string('A', 64));
+    File.WriteAllText(path, GuiProtocol.Encode(valid)); Check(ConnectionSettings.Agent(path).ControllerCertificate == new string('a', 64));
+    foreach (var invalid in new[] { valid with { ControllerCertificate = new string('g', 64) }, valid with { ControllerCertificate = null! }, valid with { InteractiveSessionId = -1 } })
+    {
+        File.WriteAllText(path, GuiProtocol.Encode(invalid));
+        try { ConnectionSettings.Agent(path); throw new Exception("invalid configuration accepted"); }
+        catch (GuiException e) { Check(e.Code == "InvalidConfiguration"); }
+    }
+    return Task.CompletedTask;
+});
+await Test("G01 published JSON request examples match the implemented API", () =>
+{
+    var repository = new DirectoryInfo(AppContext.BaseDirectory);
+    while (repository != null && !File.Exists(Path.Combine(repository.FullName, "DesktopTestDriver.slnx"))) repository = repository.Parent;
+    Check(repository != null, "repository documentation not found"); int examples = 0;
+    foreach (var file in new[] { "README.md", "docs/agent-usage.md", "docs_working/간단한-GUI-테스트-사용매뉴얼-11.md" })
+    {
+        var markdown = File.ReadAllText(Path.Combine(repository!.FullName, file));
+        foreach (System.Text.RegularExpressions.Match fence in System.Text.RegularExpressions.Regex.Matches(markdown, @"```json\s*\r?\n([\s\S]*?)```"))
+        {
+            var json = fence.Groups[1].Value; using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("arguments", out _)) continue;
+            // The beginner manual explicitly asks callers to replace this display placeholder.
+            _ = GuiProtocol.Parse(json.Replace("\"실제로-받은-세션번호\"", "\"control-example\"")); examples++;
+        }
+    }
+    Check(examples >= 7, "published request examples were not inspected"); return Task.CompletedTask;
+});
 await Test("G06 one control owner and observe mutation denial", async () =>
 {
     var c = Context(); try { c.Sessions.Open("control", 900); throw new Exception("second owner accepted"); } catch (GuiException e) { Check(e.Code == "ControlSessionBusy"); }
     var observe = c.Sessions.Open("observe", 900); var wid = await Window(c.Handler, observe.ControlSessionId);
     foreach (var op in new[] { "focus", "click", "type-text", "release-input", "launch", "close-window" }) { object a = op switch { "click" => new { windowId = wid, automationId = "button" }, "type-text" => new { windowId = wid, text = "text" }, "release-input" => new { }, "launch" => new { executable = Environment.ProcessPath!, arguments = new[] { "--sleeper" } }, _ => new { windowId = wid } }; var r = await c.Handler.Execute(new(Req(observe.ControlSessionId, op, a), 5000)); Check(r.Error?.Code == "ReadOnlySession", op); }
     Check(c.Input.Events.Count == 0 && c.Desktop.FocusCalls == 0);
-    await c.Handler.Release(c.Sessions.Get(c.Session.ControlSessionId), true, "SessionClosed"); var closed = await c.Handler.Execute(new(Req(c.Session.ControlSessionId, "key", new { windowId = wid, key = "A", action = "press" }), 5000)); Check(closed.Status == "rejected" && c.Input.Events.Count == 0);
+    await c.Handler.Release(c.Sessions.Get(c.Session.ControlSessionId), true, "SessionClosed"); var closed = await c.Handler.Execute(new(Req(c.Session.ControlSessionId, "key", new { windowId = wid, key = "A", action = "press" }), 5000)); Check(closed.Error?.Code == "SessionClosed" && c.Input.Events.Count == 0);
+});
+await Test("G06 timed-out close cannot be reopened by release-input", async () =>
+{
+    var c = Context(100); var s = c.Sessions.Get(c.Session.ControlSessionId);
+    using var entered = new ManualResetEventSlim(); using var unblock = new ManualResetEventSlim();
+    var worker = Task.Run(() => { lock (s.Mutation) { entered.Set(); unblock.Wait(); } });
+    Check(entered.Wait(1000));
+    try { Check(!await c.Handler.Release(s, true, "SessionClosed")); }
+    finally { unblock.Set(); await worker; }
+    Check(await c.Handler.Release(s, false, "ExplicitRelease"));
+    Check(s.Info.State == "closed", "release-input reopened a session whose close timed out");
+});
+await Test("G04 RPC partial write makes connection unusable", async () =>
+{
+    using var stream = new PartialWriteStream(); await using var peer = new RpcPeer(stream);
+    try { await peer.Call<GuiResponse>("test", new { }, CancellationToken.None); throw new Exception("write failure accepted"); }
+    catch (IOException) { }
+    Check(!peer.Connected, "partially written RPC connection stayed available");
+    var writes = stream.Writes;
+    try { await peer.Call<GuiResponse>("again", new { }, CancellationToken.None); throw new Exception("broken stream reused"); }
+    catch (GuiException e) { Check(e.Code == "AgentDisconnected"); }
+    Check(stream.Writes == writes);
 });
 await Test("G06 close cancels queued input, blocks until worker stops", async () =>
 {
@@ -114,6 +173,15 @@ await Test("G15 independent watchdog stops owned producer, preserves keep app", 
     try { await watchdog.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(6)); Check(watchdog.ExitCode == 0 && !Processes.Alive(store.Read<DesktopProcess>("agent-process.json")) && Processes.Alive(keep.Identity) && !Processes.Alive(scoped.Identity)); Check(store.Read<JsonElement>("watchdog-recovery.json").GetProperty("inputReleased").GetBoolean()); }
     finally { Processes.KillOwned(keep.Identity); Processes.KillOwned(scoped.Identity); if (!producer.HasExited) producer.Kill(); if (!watchdog.HasExited) watchdog.Kill(); }
 });
+await Test("G15 unreadable heartbeat still triggers independent recovery", async () =>
+{
+    var store = new StateStore(Root()); using var producer = Processes.Start(Environment.ProcessPath!, "--sleeper");
+    var identity = Processes.Identify(producer); store.Write("agent-process.json", identity);
+    File.WriteAllText(store.PathFor("agent-heartbeat.json"), "invalid-json"); store.Write("agent-limits.json", 1500);
+    using var watchdog = Processes.Start(Environment.ProcessPath!, "--watchdog", store.Root);
+    try { await watchdog.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(6)); Check(watchdog.ExitCode == 0 && !Processes.Alive(identity), "watchdog exited without stopping producer"); Check(store.Read<JsonElement>("watchdog-recovery.json").GetProperty("inputReleased").GetBoolean()); }
+    finally { if (!producer.HasExited) producer.Kill(); if (!watchdog.HasExited) watchdog.Kill(); }
+});
 await Test("G14 interrupted launch ownership prevents false cleanup success", () =>
 {
     var store = new StateStore(Root());
@@ -127,6 +195,20 @@ await Test("G20 regression: atomic heartbeat replacement while independent reade
     var store = new StateStore(Root()); store.Write("heartbeat.json", 0); using var cancellation = new CancellationTokenSource();
     var reader = Task.Run(() => { while (!cancellation.IsCancellationRequested) { var value = store.Read<int>("heartbeat.json"); Check(value >= 0); } });
     try { for (int i = 0; i < 1000; i++) store.Write("heartbeat.json", i); } finally { cancellation.Cancel(); await reader; }
+});
+await Test("G20 atomic state replacement survives a short Windows file lock", async () =>
+{
+    var store = new StateStore(Root()); store.Write("snapshot.json", 1);
+    using var started = new ManualResetEventSlim();
+    var blocker = new FileStream(store.PathFor("snapshot.json"), FileMode.Open, FileAccess.Read, FileShare.Read);
+    Task writer;
+    try
+    {
+        writer = Task.Run(() => { started.Set(); store.Write("snapshot.json", 2); });
+        Check(started.Wait(1000)); await Task.Delay(80);
+    }
+    finally { blocker.Dispose(); }
+    await writer; Check(store.Read<int>("snapshot.json") == 2);
 });
 await Test("G20 regression: sustained Unicode cannot starve input maintenance", async () =>
 {
@@ -147,6 +229,16 @@ sealed class FakeInput : IInputBackend
     public void Down(string kind, int code) { if (FailNextDown) { FailNextDown = false; throw new GuiException("InjectionFailed"); } Events.Add($"down:{kind}:{code}"); DownEntered.Set(); if (BlockDownMilliseconds > 0) Thread.Sleep(BlockDownMilliseconds); OnTransition?.Invoke(kind, code, true); }
     public void Up(string kind, int code) { Events.Add($"up:{kind}:{code}"); OnTransition?.Invoke(kind, code, false); } public void Move(int x, int y) { Events.Add($"move:{x}:{y}"); OnMove?.Invoke(); }
     public void Wheel(int delta) => Events.Add($"wheel:{delta}");
+}
+sealed class PartialWriteStream : MemoryStream
+{
+    public int Writes;
+    public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        Writes++;
+        if (Writes == 2) throw new IOException("simulated failure after RPC header");
+        return base.WriteAsync(buffer, cancellationToken);
+    }
 }
 sealed class FakeDesktop : IGuiDesktop
 {

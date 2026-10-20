@@ -132,7 +132,7 @@ public static class GuiProtocol
     public static int Key(string key)
     {
         if (key.Length == 1 && (key[0] is >= 'A' and <= 'Z' or >= '0' and <= '9')) return key[0];
-        if (key.StartsWith('F') && int.TryParse(key.AsSpan(1), out var f) && f is >= 1 and <= 24) return 0x70 + f - 1;
+        if (key.StartsWith('F') && int.TryParse(key.AsSpan(1), out var f) && f is >= 1 and <= 24 && key == "F" + f.ToString(System.Globalization.CultureInfo.InvariantCulture)) return 0x70 + f - 1;
         return key switch { "CTRL" => 0x11, "ALT" => 0x12, "SHIFT" => 0x10, "WIN" => 0x5B, "ENTER" => 13, "TAB" => 9, "ESC" => 27, "BACKSPACE" => 8, "DELETE" => 46, "SPACE" => 32, "LEFT" => 37, "RIGHT" => 39, "UP" => 38, "DOWN" => 40, "HOME" => 36, "END" => 35, "PAGEUP" => 33, "PAGEDOWN" => 34, _ => throw new GuiException("InvalidKey") };
     }
     public static string Fingerprint(GuiRequest r)

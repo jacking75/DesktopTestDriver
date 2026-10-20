@@ -45,7 +45,20 @@ public sealed class RpcPeer(Stream stream) : IAsyncDisposable
     private async Task Send(RpcMessage message, CancellationToken cancellation)
     {
         await sending.WaitAsync(cancellation);
-        try { await GuiWire.Write(stream, message, cancellation); } finally { sending.Release(); }
+        try
+        {
+            if (!Connected) throw new GuiException("AgentDisconnected");
+            await GuiWire.Write(stream, message, cancellation);
+        }
+        catch
+        {
+            // A failed write may have sent only a header or part of the payload.
+            // Further frames cannot safely share that connection.
+            stop.Cancel(); stream.Dispose();
+            foreach (var p in pending.Values) p.TrySetException(new GuiException("AgentDisconnected"));
+            throw;
+        }
+        finally { sending.Release(); }
     }
     public async Task Run(CancellationToken cancellation)
     {

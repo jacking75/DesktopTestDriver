@@ -10,7 +10,7 @@ try
     if (a is ["--help"]) { Console.WriteLine($"DesktopTestDriver 0.3 / GUI API 1\n--status [--machine TARGET]\n--session-open --machine TARGET [--mode control|observe] [--idle-seconds 900]\n--session-status [CONTROL_ID]\n--request FILE\n--request-status CONTROL_ID REQUEST_ID\n--session-close CONTROL_ID\n--config FILE (first option)\nSetup: --initialize STATE ADDRESS PORT | --register MACHINE CERTIFICATE.cer\nHost: --serve | --shutdown\nUsage: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}\nSetup: {Path.Combine(AppContext.BaseDirectory, "scripts", "manage.ps1")}"); return 0; }
     if (a is ["--initialize", var state, var address, var port])
     {
-        if (File.Exists(config)) throw new GuiException("ConfigurationExists"); var settings = new ControllerSettings(Path.GetFullPath(state), address, int.Parse(port)); var store = new StateStore(settings.StateDirectory); ConnectionSettings.Initialize(store, "Controller");
+        if (File.Exists(config)) throw new GuiException("ConfigurationExists"); var settings = new ControllerSettings(Path.GetFullPath(state), address, int.Parse(port)); ConnectionSettings.Validate(settings); var store = new StateStore(settings.StateDirectory); ConnectionSettings.Initialize(store, "Controller");
         File.WriteAllText(config, GuiProtocol.Encode(settings)); Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed", Data: new { configuration = config, publicCertificate = store.PathFor("identity.cer") }))); return 0;
     }
     var c = ConnectionSettings.Controller(config);

@@ -10,6 +10,8 @@ API 1의 Controller·Agent와 아래 GUI 작업을 구현했다. 로컬 계약·
 
 Windows 11의 실제 메모 저장·재열기, 입력 확인 창, 입력 중 세션 종료, 본체·감시 장애 후 해제와 두 실제 PC의 동시 조작/관측을 확인했다. 두 PC 검사의 현장 입력자는 별도 조작 세션으로 모의했다. RemoteAssist 실제 시험은 사용자 지시로 제외했으며 Viewer 역할의 A 입력·B 관측 도구 계약만 모의 검증했다. 관리자 창·잠금·RDP·HDR 및 RemoteAssist 제품 동작의 통과를 뜻하지 않는다.
 
+위 실제 PC 기록은 13번 계획에 명시한 이전 후보의 증거다. 이후 코드 수정본의 검증 범위는 같은 문서의 코드·문서 정밀 점검 기록을 따르며, 이전 실제 PC 결과를 새 바이너리의 재검증 결과로 간주하지 않는다.
+
 **사용 방식은 [간단한 GUI 테스트 매뉴얼](docs_working/간단한-GUI-테스트-사용매뉴얼-11.md)과 [RemoteAssist E2E 테스트 매뉴얼](docs_working/RemoteAssist-E2E-테스트-사용매뉴얼-12.md)을 기준으로 한다.** 두 문서는 독립 도구와 선택 제품 시험의 절차를 설명한다. 개발자는 [상세 구현 계획](docs_working/GUI-사용매뉴얼-기반-상세구현계획-13.md)의 태스크 순서와 완료 기준을 따른다. 실제 명령·필드·응답·오류 후 행동은 [사용 규약](docs/agent-usage.md)을 따른다. 설치와 인증서 등록도 사용 규약에서 안내한다.
 
 ## 구현 기능 목록
@@ -145,16 +147,74 @@ RemoteAssist 예시의 작업 PC와 PC A는 동일한 머신이다. PC A에는 �
 
 명령 오류가 나도 가능한 관측을 유지해 에이전트가 다시 판단할 수 있게 한다. 입력 해제와 앱 종료를 분리하고, 제어 세션을 닫았다는 이유만으로 제품 앱을 무조건 종료하지 않는다.
 
-## 설치와 로컬 검증
+## 빌드와 설치
 
-Windows 10/11 x64와 .NET 10 Desktop Runtime을 사용한다. 개발 환경에는 .NET 10 SDK가 필요하다.
+### 빌드 환경
+
+Windows 10/11 x64에서 저장소 루트의 PowerShell로 실행한다. 빌드 PC에는 .NET 10 SDK가 필요하며, 같은 메이저 버전 10 계열의 마이너·패치 버전 차이로 빌드를 제한하지 않는다. 배포 대상 PC에는 .NET 10 Desktop Runtime x64가 필요하다.
 
 ```powershell
-.\verify.ps1
+dotnet --list-sdks
+dotnet --version
+```
+
+SDK 버전을 저장소에서 고정하지 않으므로 빌드에 사용하는 SDK는 `dotnet --version`으로 확인한다. 프로젝트의 대상 프레임워크는 `net10.0-windows10.0.19041.0`이다.
+
+### 개발용 빌드 (Debug)
+
+코드를 수정하고 디버거로 실행할 때 사용한다. 패키지 잠금 파일을 기준으로 의존성을 복원한 뒤 솔루션을 Debug로 빌드한다.
+
+```powershell
+dotnet restore DesktopTestDriver.slnx --locked-mode
+dotnet build DesktopTestDriver.slnx -c Debug --no-restore
+```
+
+주요 실행 파일은 다음 위치에 생성된다.
+
+| 프로그램 | 개발용 실행 파일 |
+|---|---|
+| Controller | `bin/Debug/Controller/Controller.exe` |
+| Agent | `bin/Debug/Agent/Agent.exe` |
+
+프로젝트별 하위 폴더로 구분하며 .NET 버전명 폴더는 생성하지 않는다. `dotnet build DesktopTestDriver.slnx -c Release`의 일반 빌드 결과는 같은 구조의 `bin/Release`에 생성된다.
+
+### 라이브 배포용 빌드 (Release)
+
+실제 사용할 PC에 배치할 때는 다음 명령으로 Windows x64용 Release 패키지를 만든다. 의존성 복원, 솔루션 빌드, Controller·Agent 게시와 문서·설정 복사를 수행한다.
+
+```powershell
 .\build.ps1 -Package
 ```
 
-빌드가 출력한 `artifacts/package-.../Controller`와 `Agent`를 각각 복사해 배치한다. 두 폴더는 독립 실행에 필요한 DLL·설정·문서·`scripts/manage.ps1`를 포함한다. 검증용 SimpleMemo·InputWindow는 같은 산출물의 `test-apps`에 따로 둔다. 기본 검증은 실제 키보드·마우스 입력을 시작하지 않는다. CI는 별도 요청으로만 다룬다.
+마지막 줄에 출력되는 `bin/live_Release`가 배포 산출물 폴더다. 라이브 배포용 폴더는 구성 이름 앞에 `live_`를 붙인다.
+
+```text
+bin/live_Release/
+  Controller/               Controller.exe와 실행에 필요한 DLL·설정·문서·관리 스크립트
+  Agent/                    Agent.exe와 실행에 필요한 DLL·설정·문서·관리 스크립트
+  test-apps/SimpleMemo/      별도 시험용 메모 프로그램
+  test-apps/InputWindow/     별도 시험용 입력 확인 프로그램
+```
+
+작업 PC에는 `Controller` 폴더 전체를, 관측·조작할 각 PC에는 `Agent` 폴더 전체를 복사한다. 작업 PC 자체를 조작하려면 그 PC에 두 폴더를 함께 배치한다. `test-apps`는 도구 검증에 사용할 때만 별도로 복사한다.
+
+Debug 구성의 라이브 배포용 패키지가 필요하면 다음 명령으로 `bin/live_Debug`에 생성한다.
+
+```powershell
+.\build.ps1 -Package -Configuration Debug
+```
+
+배포 패키지는 .NET 런타임을 포함하지 않는다. 대상 PC에 .NET 10 Desktop Runtime x64를 설치한 뒤 실행한다. Release 빌드만 하고 배포 패키지를 만들지 않으려면 `.\build.ps1`을 실행한다. 개발용 Debug 빌드는 `.\build.ps1 -Configuration Debug`로도 수행할 수 있다.
+
+### 로컬 검증
+
+```powershell
+.\verify.ps1
+```
+
+Release 패키지를 만든 뒤 요청 계약·통신·세션·프로세스와 별도 복사한 패키지를 검사한다. 결과는 `artifacts/verify-...`에 저장한다. 실제 키보드·마우스 입력은 시작하지 않는다. CI는 별도 요청으로만 다룬다.
+
+### 배포 후 최초 설정
 
 [사용 규약의 최초 설정](docs/agent-usage.md#최초-설정과-상주-실행)대로 인증서를 교환하고 상주 프로그램을 시작한다. 같은 PC에서는 127.0.0.1을 사용한다. 원격 Agent에는 Controller PC의 주소를 지정하고 Controller의 수신 주소·방화벽을 환경에 맞게 준비한다. 일반 사용자가 로그인한 콘솔 바탕화면만 지원하며 관리자 창·잠금·RDP의 지원을 추정하지 않는다.
 

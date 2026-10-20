@@ -10,7 +10,7 @@ try {
     $previousController=$env:DTD_TEST_CONTROLLER
     try {
         $env:DTD_TEST_CONTROLLER=Join-Path $package 'Controller/Controller.exe'
-        & ./tests/Driver.Tests/bin/Release/net10.0-windows10.0.19041.0/Driver.Tests.exe | Tee-Object -FilePath (Join-Path $evidence 'local-tests.txt')
+        & ./bin/Release/Driver.Tests/Driver.Tests.exe | Tee-Object -FilePath (Join-Path $evidence 'local-tests.txt')
         if($LASTEXITCODE -ne 0){throw 'Local contract/transport/session/process validation failed'}
     } finally {$env:DTD_TEST_CONTROLLER=$previousController}
     & ./scripts/check-package.ps1 -Package $package | Tee-Object -FilePath (Join-Path $evidence 'package-tests.txt')

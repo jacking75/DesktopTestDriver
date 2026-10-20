@@ -52,7 +52,16 @@ public sealed class StateStore
         {
             using (var file = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
             { file.Write(Encoding.UTF8.GetBytes(GuiProtocol.Encode(value))); file.Flush(true); }
-            File.Move(temp, destination, true);
+            var replacing = Stopwatch.GetTimestamp();
+            while (true)
+            {
+                try { File.Move(temp, destination, true); break; }
+                // Windows scanners or readers can briefly deny rename/delete access.
+                // Retry only sharing/access errors; keep the durable write ahead of input.
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException &&
+                    (e.HResult & 0xffff) is 5 or 32 or 33 && Stopwatch.GetElapsedTime(replacing).TotalMilliseconds < 250)
+                { Thread.Sleep(5); }
+            }
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }

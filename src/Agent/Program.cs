@@ -18,7 +18,8 @@ internal static class Program
         if (a is ["--initialize", var state, var machine, var host, var port, var controllerCert])
         {
             if (File.Exists(config)) throw new GuiException("ConfigurationExists"); using var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificateFromFile(controllerCert);
-            var store = new StateStore(Path.GetFullPath(state)); ConnectionSettings.Initialize(store, machine); var settings = new AgentSettings(store.Root, machine, host, int.Parse(port), ConnectionSettings.Hash(cert));
+            var settings = new AgentSettings(Path.GetFullPath(state), machine, host, int.Parse(port), ConnectionSettings.Hash(cert)); ConnectionSettings.Validate(settings);
+            var store = new StateStore(settings.StateDirectory); ConnectionSettings.Initialize(store, machine);
             File.WriteAllText(config, GuiProtocol.Encode(settings)); Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed", Data: new { configuration = config, publicCertificate = store.PathFor("identity.cer") }))); return 0;
         }
         var c = ConnectionSettings.Agent(config); var stateStore = new StateStore(c.StateDirectory);

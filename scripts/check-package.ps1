@@ -35,7 +35,16 @@ $controllerState=Join-Path $isolated 'controller-state';$agentState=Join-Path $i
 $probe=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$probe.Start();$port=$probe.LocalEndpoint.Port;$probe.Stop()
 $controllerManage=Join-Path $controller 'scripts/manage.ps1';$agentManage=Join-Path $agent 'scripts/manage.ps1'
 try {
-    & $controllerManage -Action Initialize -StateDirectory $controllerState -Port $port | Out-Null
+    foreach($role in @('Controller','Agent')) {
+        $invalidConfig=Join-Path $isolated ($role+'-invalid.json');$invalidState=Join-Path $isolated ($role+'-invalid-state')
+        $invalidArguments=if($role -eq 'Controller'){@('--initialize',$invalidState,'127.0.0.1','0')}else{@('--initialize',$invalidState,'invalid machine','127.0.0.1',[string]$port,(Join-Path $controllerState 'identity.cer'))}
+        if($role -eq 'Agent') { & $controllerManage -Action Initialize -StateDirectory $controllerState -Port $port | Out-Null }
+        $previousError=$ErrorActionPreference
+        try { $ErrorActionPreference='Continue'; $invalid=@(& (Join-Path (Join-Path $isolated $role) ($role+'.exe')) --config $invalidConfig @invalidArguments 2>&1);$invalidExit=$LASTEXITCODE }
+        finally { $ErrorActionPreference=$previousError }
+        if($invalidExit -eq 0 -or ($invalid -join "`n") -notmatch 'InvalidConfiguration' -or (Test-Path -LiteralPath $invalidConfig) -or (Test-Path -LiteralPath (Join-Path $invalidState 'identity.pfx'))){throw "Invalid initialization did not reject configuration before creating identity: $role"}
+    }
+    $emptyPeersBackup=@(& $controllerManage -Action Backup)[-1]
     & $agentManage -Action Initialize -StateDirectory $agentState -MachineId package-smoke -Port $port -Certificate (Join-Path $controllerState 'identity.cer') | Out-Null
     & $controllerManage -Action Register -MachineId package-smoke -Certificate (Join-Path $agentState 'identity.cer') | Out-Null
     & $controllerManage -Action Start | Out-Null
@@ -49,10 +58,18 @@ try {
     & $agentManage -Action Restart | Out-Null
     & $agentManage -Action Stop | Out-Null
     & $controllerManage -Action Restart | Out-Null
-    & $controllerManage -Action Backup | Out-Null
-    $backup=(Get-ChildItem -LiteralPath $controllerState -Directory -Filter 'backup-*' | Select-Object -First 1).FullName
+    $backup=@(& $controllerManage -Action Backup)[-1]
     & $controllerManage -Action Restore -BackupDirectory $backup | Out-Null
-    @{isolated=$isolated;roles=2;links='valid';manifestHashes='valid';lifecycle='valid';desktopInput=$false} | ConvertTo-Json -Compress
+    if(-not(Test-Path -LiteralPath (Join-Path $controllerState 'peers.json'))){throw 'Restore lost the saved registrations'}
+    $incomplete=Join-Path $controllerState 'backup-incomplete';New-Item -ItemType Directory -Path $incomplete | Out-Null
+    Copy-Item -LiteralPath (Join-Path $backup 'configuration.json') -Destination $incomplete
+    $identityHash=(Get-FileHash -LiteralPath (Join-Path $controllerState 'identity.pfx')).Hash
+    try { & $controllerManage -Action Restore -BackupDirectory $incomplete | Out-Null;throw 'Incomplete backup was accepted' }
+    catch { if($_.Exception.Message -notmatch '^Incomplete backup:'){throw} }
+    if((Get-FileHash -LiteralPath (Join-Path $controllerState 'identity.pfx')).Hash -ne $identityHash){throw 'Incomplete restore changed identity'}
+    & $controllerManage -Action Restore -BackupDirectory $emptyPeersBackup | Out-Null
+    if(Test-Path -LiteralPath (Join-Path $controllerState 'peers.json')){throw 'Restore retained registrations absent from the backup'}
+    @{isolated=$isolated;roles=2;links='valid';manifestHashes='valid';lifecycle='valid';invalidInitialization='rejected';incompleteBackup='rejected';emptyRegistrationRestore='valid';desktopInput=$false} | ConvertTo-Json -Compress
 } finally {
     & $agentManage -Action Stop | Out-Null
     & $controllerManage -Action Stop | Out-Null

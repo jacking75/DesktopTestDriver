@@ -83,7 +83,7 @@ static class IntegrationTests
             Check(bad.Status == "failed" && !File.Exists(invalidOutput), "missing local image reported completed");
             passed++; Console.WriteLine("PASS G07/G10 capture delivery, duplicate lookup before output check, delivery failure");
             var config = Path.Combine(root, "Controller.json"); File.WriteAllText(config, GuiProtocol.Encode(controller));
-            var exe = Environment.GetEnvironmentVariable("DTD_TEST_CONTROLLER") ?? Path.GetFullPath("src/Controller/bin/Debug/net10.0-windows10.0.19041.0/Controller.exe");
+            var exe = Environment.GetEnvironmentVariable("DTD_TEST_CONTROLLER") ?? Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Controller", "Controller.exe"));
             async Task<(int Code, string Output)> Cli(params string[] arguments)
             {
                 var psi = new ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
@@ -166,8 +166,8 @@ static class IntegrationTests
         finally
         {
             stopAgents.Cancel();
-            try { await Task.WhenAll(agentA, agentB).WaitAsync(TimeSpan.FromSeconds(10)); } catch (Exception e) { Console.Error.WriteLine("Agent shutdown: " + e.GetType().Name); }
-            stopController.Cancel(); await hosting.WaitAsync(TimeSpan.FromSeconds(10));
+            try { await Task.WhenAll(agentA, agentB).WaitAsync(TimeSpan.FromSeconds(10)); }
+            finally { stopController.Cancel(); await hosting.WaitAsync(TimeSpan.FromSeconds(10)); }
         }
         return passed;
     }

@@ -38,13 +38,19 @@ public static class ConnectionSettings
     public static ControllerSettings Controller(string path)
     {
         var c = GuiProtocol.Decode<ControllerSettings>(File.ReadAllText(path));
+        Validate(c); return c;
+    }
+    public static void Validate(ControllerSettings c)
+    {
         if (!Path.IsPathFullyQualified(c.StateDirectory) || !IPAddress.TryParse(c.ListenAddress, out _) || c.Port is < 1 or > 65535) throw new GuiException("InvalidConfiguration");
-        return c;
     }
     public static AgentSettings Agent(string path)
     {
         var c = GuiProtocol.Decode<AgentSettings>(File.ReadAllText(path));
-        if (!Path.IsPathFullyQualified(c.StateDirectory) || !GuiProtocol.Id(c.MachineId) || string.IsNullOrWhiteSpace(c.ControllerHost) || c.ControllerPort is < 1 or > 65535 || c.MaxHoldMilliseconds is < 100 or > 1500 || c.MaxStopMilliseconds is < 100 or > 3000 || c.ControllerCertificate.Length != 64) throw new GuiException("InvalidConfiguration");
-        return c;
+        Validate(c); return c with { ControllerCertificate = c.ControllerCertificate.ToLowerInvariant() };
+    }
+    public static void Validate(AgentSettings c)
+    {
+        if (!Path.IsPathFullyQualified(c.StateDirectory) || !GuiProtocol.Id(c.MachineId) || string.IsNullOrWhiteSpace(c.ControllerHost) || c.ControllerPort is < 1 or > 65535 || c.InteractiveSessionId < 0 || c.MaxHoldMilliseconds is < 100 or > 1500 || c.MaxStopMilliseconds is < 100 or > 3000 || c.ControllerCertificate is not { Length: 64 } || !c.ControllerCertificate.All(char.IsAsciiHexDigit)) throw new GuiException("InvalidConfiguration");
     }
 }

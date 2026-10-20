@@ -12,9 +12,13 @@ public static class WatchdogRunner
         while (!store.Exists("watchdog-stop.json"))
         {
             bool alive = Processes.Alive(owner);
-            var heartbeat = store.Read<long>("agent-heartbeat.json");
-            bool stale = Stopwatch.GetElapsedTime(heartbeat).TotalMilliseconds > 3000 || store.Exists("worker-stop-needed.json");
-            try { stale |= input.Overdue(store.Read<int>("agent-limits.json")).Length != 0; }
+            bool stale;
+            try
+            {
+                var heartbeat = store.Read<long>("agent-heartbeat.json");
+                stale = Stopwatch.GetElapsedTime(heartbeat).TotalMilliseconds > 3000 || store.Exists("worker-stop-needed.json") ||
+                    input.Overdue(store.Read<int>("agent-limits.json")).Length != 0;
+            }
             catch { stale = true; }
             if (!alive || stale)
             {

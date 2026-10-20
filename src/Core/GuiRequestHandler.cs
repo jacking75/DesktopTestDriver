@@ -94,10 +94,19 @@ public sealed class GuiRequestHandler
     public async Task<bool> Release(ControlSession s, bool close, string reason)
     {
         var started = Stopwatch.GetTimestamp();
+        // Remember close intent even if a stuck native call prevents taking Mutation.
+        if (close) { lock (s) { s.CloseReason = reason; s.CloseRequested = true; } }
+        s.Permit.Cancel();
+        if (!await s.Releasing.WaitAsync(maxStop)) return false;
+        try { return await ReleaseCore(s, reason, started); }
+        finally { s.Releasing.Release(); }
+    }
+    private async Task<bool> ReleaseCore(ControlSession s, string reason, long started)
+    {
         CancellationTokenSource old;
         // Revoke before waiting for the native dispatch gate, even when its owner is stuck.
         s.Permit.Cancel();
-        if (!Monitor.TryEnter(s.Mutation, maxStop))
+        if (!Monitor.TryEnter(s.Mutation, Math.Max(0, maxStop - (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds)))
         {
             s.Info = s.Info with { State = "blocked", InputReleased = null, StopReason = "DispatchStopUnconfirmed" };
             sessions.Save(s); store.Write("worker-stop-needed.json", new { sessionId = s.Info.ControlSessionId, reason }); return false;
@@ -105,7 +114,6 @@ public sealed class GuiRequestHandler
         try
         {
             if (s.Info.State is "closed" or "expired") return s.Info.InputReleased == true && s.Info.ApplicationsStopped == true;
-            if (close) { s.CloseRequested = true; s.CloseReason = reason; }
             old = s.Permit; s.Info = s.Info with { State = "closing", StopReason = reason }; old.Cancel(); sessions.Save(s);
         }
         finally { Monitor.Exit(s.Mutation); }
@@ -120,10 +128,13 @@ public sealed class GuiRequestHandler
             lock (s.Mutation)
             {
                 var released = s.Info.Mode == "observe" ? input.Empty(s.Info.ControlSessionId) : input.Release(s.Info.ControlSessionId);
+                // A concurrent close can arrive during cleanup. Use one intent snapshot;
+                // the serialized close will finish any cleanup this release did not do.
+                var closing = s.CloseRequested; var closeReason = s.CloseReason;
                 var before = applications.List(s.Info.ControlSessionId);
-                var stopped = !s.CloseRequested || s.Info.Mode == "observe" || applications.Terminate(s.Info.ControlSessionId);
+                var stopped = !closing || s.Info.Mode == "observe" || applications.Terminate(s.Info.ControlSessionId);
                 var after = applications.List(s.Info.ControlSessionId);
-                var state = released && stopped ? s.CloseRequested ? s.CloseReason == "IdleExpired" ? "expired" : "closed" : "active" : "blocked";
+                var state = released && stopped ? closing ? closeReason == "IdleExpired" ? "expired" : "closed" : "active" : "blocked";
                 s.Info = s.Info with
                 {
                     State = state,
