@@ -1,5 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>WinExe</OutputType><AssemblyName>Agent</AssemblyName></PropertyGroup>
-  <ItemGroup><None Include="Agent.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
-  <ItemGroup><ProjectReference Include="../Core/Core.csproj" /></ItemGroup>
-</Project>

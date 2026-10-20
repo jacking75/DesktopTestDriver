@@ -1,4 +1,1 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../src/Core/Core.csproj" /></ItemGroup>
-</Project>
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup><ItemGroup><Compile Include="GuiTests.cs"/><Compile Include="IntegrationTests.cs"/><ProjectReference Include="../../src/Core/Core.csproj"/></ItemGroup></Project>

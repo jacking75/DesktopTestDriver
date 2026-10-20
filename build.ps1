@@ -1,35 +1,30 @@
 ﻿param([switch]$Package)
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference='Stop'
 Push-Location $PSScriptRoot
 try {
-    dotnet build DesktopTestDriver.slnx -c Release --nologo
-    if ($LASTEXITCODE -ne 0) { throw 'Independent build failed' }
-    if ($Package) {
-        $target = Join-Path $PSScriptRoot ('artifacts/package-' + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Path $target | Out-Null
-        foreach ($project in @('Client','Client.Broker','Client.Watchdog','Server')) {
-            dotnet publish "src/$project/$project.csproj" -c Release -r win-x64 --self-contained false -o (Join-Path $target $project) --nologo
-            if ($LASTEXITCODE -ne 0) { throw "Publish failed: $project" }
-        }
-        dotnet publish fixtures/MarkerWindow/MarkerWindow.csproj -c Release -r win-x64 --self-contained false -o (Join-Path $target 'MarkerWindow') --nologo
-        if ($LASTEXITCODE -ne 0) { throw 'Publish failed: MarkerWindow' }
-        foreach ($folder in @('transport','scenarios','fixtures','docs','cli','inventory')) {
-            $source = Join-Path $PSScriptRoot $folder
-            $destination = Join-Path $target $folder
-            Get-ChildItem -LiteralPath $source -Recurse -File | Where-Object {
-                $_.Extension -in @('.json','.md','.py','.txt') -and $_.FullName -notmatch '[\\/](bin|obj|__pycache__)[\\/]' -and
-                ($folder -ne 'fixtures' -or $_.Name -eq 'generic-desktop.json')
-            } | ForEach-Object {
-                $copy = Join-Path $destination $_.FullName.Substring($source.Length + 1)
-                New-Item -ItemType Directory -Path (Split-Path -Parent $copy) -Force | Out-Null
-                Copy-Item -LiteralPath $_.FullName -Destination $copy
-            }
-        }
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README-10.md') -Destination $target
-        $files = @(Get-ChildItem -LiteralPath $target -Recurse -File | Sort-Object FullName | ForEach-Object {
-            @{ path=$_.FullName.Substring($target.Length + 1).Replace('\','/'); sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); size=$_.Length }
-        })
-        @{version='0.2.0';protocolVersion=2;profile='core';files=$files} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $target 'package-manifest.json') -Encoding UTF8
-        Write-Output $target
-    }
-} finally { Pop-Location }
+ dotnet restore DesktopTestDriver.slnx --locked-mode --nologo
+ if($LASTEXITCODE -ne 0){throw 'Locked restore failed'}
+ dotnet build DesktopTestDriver.slnx -c Release --no-restore --nologo
+ if($LASTEXITCODE -ne 0){throw 'Build failed'}
+ if($Package){
+  $target=Join-Path $PSScriptRoot ('artifacts/package-'+[guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $target | Out-Null
+  $documents=@('README.md','docs/agent-usage.md','docs/agent-driven-desktop-control.md','docs_working/간단한-GUI-테스트-사용매뉴얼-11.md','docs_working/RemoteAssist-E2E-테스트-사용매뉴얼-12.md','docs_working/GUI-사용매뉴얼-기반-상세구현계획-13.md')
+  foreach($role in @('Controller','Agent')){
+   $destination=Join-Path $target $role
+   dotnet publish "src/$role/$role.csproj" -c Release -r win-x64 --no-restore --self-contained false -o $destination --nologo
+   if($LASTEXITCODE -ne 0){throw "Publish failed: $role"}
+   foreach($document in $documents){$to=Join-Path $destination $document;New-Item -ItemType Directory -Path (Split-Path -Parent $to) -Force | Out-Null;Copy-Item -LiteralPath (Join-Path $PSScriptRoot $document) -Destination $to}
+   New-Item -ItemType Directory -Path (Join-Path $destination 'scripts') | Out-Null
+   Copy-Item -LiteralPath scripts/manage.ps1 -Destination (Join-Path $destination 'scripts/manage.ps1')
+   Copy-Item -LiteralPath LICENSE -Destination $destination
+   $files=@(Get-ChildItem -LiteralPath $destination -Recurse -File | Sort-Object FullName | ForEach-Object {@{path=$_.FullName.Substring($destination.Length+1).Replace('\','/');bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
+   @{version='0.3.0';apiVersion=1;role=$role;sourceRevision=(git rev-parse HEAD);workingTreeDirty=([bool](git status --porcelain));files=$files} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $destination 'package-manifest.json') -Encoding UTF8
+  }
+  foreach($fixture in @('SimpleMemo','InputWindow')){
+   dotnet publish "fixtures/$fixture/$fixture.csproj" -c Release -r win-x64 --no-restore --self-contained false -o (Join-Path $target "test-apps/$fixture") --nologo
+   if($LASTEXITCODE -ne 0){throw "Fixture publish failed: $fixture"}
+  }
+  Write-Output $target
+ }
+}finally{Pop-Location}

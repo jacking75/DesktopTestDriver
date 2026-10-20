@@ -1,10 +1,1 @@
-<Solution>
-  <Project Path="src/Contracts/Contracts.csproj" />
-  <Project Path="src/Core/Core.csproj" />
-  <Project Path="src/Client/Client.csproj" />
-  <Project Path="src/Client.Broker/Client.Broker.csproj" />
-  <Project Path="src/Client.Watchdog/Client.Watchdog.csproj" />
-  <Project Path="src/Server/Server.csproj" />
-  <Project Path="fixtures/MarkerWindow/MarkerWindow.csproj" />
-  <Project Path="tests/Driver.Tests/Driver.Tests.csproj" />
-</Solution>
+<Solution><Project Path="src/Contracts/Contracts.csproj"/><Project Path="src/Core/Core.csproj"/><Project Path="src/Controller/Controller.csproj"/><Project Path="src/Agent/Agent.csproj"/><Project Path="fixtures/SimpleMemo/SimpleMemo.csproj"/><Project Path="fixtures/InputWindow/InputWindow.csproj"/><Project Path="tests/Driver.Tests/Driver.Tests.csproj"/></Solution>

@@ -1,1 +1,1 @@
-<Project Sdk="Microsoft.NET.Sdk" />
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><EnableDefaultCompileItems>false</EnableDefaultCompileItems></PropertyGroup><ItemGroup><Compile Include="GuiProtocol.cs"/><Compile Include="DesktopTypes.cs"/></ItemGroup></Project>

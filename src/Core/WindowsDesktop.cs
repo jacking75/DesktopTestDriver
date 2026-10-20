@@ -1,323 +1,168 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Automation;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
-
 namespace DesktopTestDriver;
 
-public interface IDesktop
+public sealed class WindowsDesktop(int session, string executable, string privateCaptureDirectory) : IGuiDesktop, IDisposable
 {
-    Observation Inspect();
-    string Capture(WindowIdentity window, string destination);
-    UiNode[] Controls(WindowIdentity window);
-    bool Focus(WindowIdentity window);
-    bool PhysicalConflict { get; }
-}
-
-public sealed class WindowsDesktop(RunConfig config, string clientExecutable) : IDesktop
-{
-    private PhysicalInputMonitor? monitor;
-    public bool PhysicalConflict => monitor?.Conflict == true;
-    public IDisposable MonitorInput(Func<bool>? allowExternalInjection = null) => monitor = new PhysicalInputMonitor(allowExternalInjection);
+    private readonly WindowGenerations generations = new();
+    public void Dispose() => generations.Dispose();
     public static void EnableDpi() => Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
     public static string DesktopName()
     {
-        var desktop = Native.OpenInputDesktop(0, false, 1);
-        if (desktop == IntPtr.Zero) throw new DriverException(Error.DesktopChanged);
+        var desktop = Native.OpenInputDesktop(0, false, 1); if (desktop == IntPtr.Zero) throw new GuiException("UnsupportedDesktop");
         try
         {
-            var value = new StringBuilder(256);
-            if (!Native.GetUserObjectInformation(desktop, 2, value, 512, out _)) throw new DriverException(Error.DesktopChanged);
-            var threadDesktop = Native.GetThreadDesktop(Native.GetCurrentThreadId());
-            var threadName = new StringBuilder(256);
-            if (!Native.GetUserObjectInformation(threadDesktop, 2, threadName, 512, out _) || threadName.ToString() != value.ToString())
-                throw new DriverException(Error.DesktopChanged);
-            return value.ToString();
+            var name = new StringBuilder(256); var thread = new StringBuilder(256);
+            if (!Native.GetUserObjectInformation(desktop, 2, name, 512, out _) || !Native.GetUserObjectInformation(Native.GetThreadDesktop(Native.GetCurrentThreadId()), 2, thread, 512, out _) || name.ToString() != thread.ToString()) throw new GuiException("UnsupportedDesktop");
+            return name.ToString();
         }
         finally { Native.CloseDesktop(desktop); }
     }
-    public static bool ConsoleValid(int session)
+    public bool Valid { get { try { using var p = Process.GetCurrentProcess(); return p.SessionId == session && session > 0 && Native.WTSGetActiveConsoleSessionId() == session && DesktopName() == "Default" && !Elevated(p.Handle); } catch { return false; } } }
+    public static bool Elevated(IntPtr process)
     {
-        using var current = Process.GetCurrentProcess();
-        return current.SessionId == session && session > 0 && Native.WTSGetActiveConsoleSessionId() == session && DesktopName() == "Default" && !IsElevated(current.Handle);
+        if (!Native.OpenProcessToken(process, 8, out var token)) throw new GuiException("AccessDenied");
+        try { if (!Native.GetTokenInformation(token, 20, out int elevated, 4, out _)) throw new GuiException("AccessDenied"); return elevated != 0; } finally { Native.CloseHandle(token); }
     }
-    public static bool IsElevated(IntPtr process)
+    public DesktopWindow Identify(long handle)
     {
-        if (!Native.OpenProcessToken(process, 8, out var token)) throw new DriverException(Error.ObservationUnavailable);
+        var h = new IntPtr(handle);
+        if (!Native.IsWindow(h)) throw new GuiException("WindowNotFound", "WindowDestroyed");
+        if (!Native.IsWindowVisible(h)) throw new GuiException("WindowNotFound", "WindowHidden");
+        if (Native.IsIconic(h)) throw new GuiException("WindowNotFound", "WindowMinimized");
+        Native.GetWindowThreadProcessId(h, out var pid); using var p = Process.GetProcessById((int)pid);
+        if (p.SessionId != session || Elevated(p.Handle)) throw new GuiException("AccessDenied");
+        var title = new StringBuilder(1024); Native.GetWindowText(h, title, title.Capacity);
+        if (!Native.GetClientRect(h, out var r)) throw new GuiException("ObservationUnavailable"); var origin = new Native.Point();
+        if (!Native.ClientToScreen(h, ref origin)) throw new GuiException("ObservationUnavailable");
+        return new(handle, Processes.Identify(p), title.ToString(), new(origin.X, origin.Y, r.Right - r.Left, r.Bottom - r.Top), Native.GetDpiForWindow(h), Native.GetForegroundWindow() == h, generations.Get(handle));
+    }
+    public DesktopWindow[] Windows()
+    {
+        if (!Valid) throw new GuiException("NoInteractiveSession"); var found = new List<DesktopWindow>();
+        Native.EnumWindows((h, _) => { try { if (Native.DwmGetWindowAttribute(h, 14, out var cloaked, 4) == 0 && cloaked != 0) return true; var w = Identify(h.ToInt64()); if (w.Title.Length > 0 && w.Bounds.Width > 0 && w.Bounds.Height > 0) found.Add(w); } catch { } return true; }, IntPtr.Zero);
+        return found.ToArray();
+    }
+    public bool Focus(DesktopWindow window)
+    {
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var arg in new[] { "--focus", window.Handle.ToString(System.Globalization.CultureInfo.InvariantCulture), window.Process.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture), window.Process.CreatedAt.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture) }) start.ArgumentList.Add(arg);
+        using var helper = Process.Start(start) ?? throw new GuiException("FocusDenied");
+        if (!helper.WaitForExit(1200)) { helper.Kill(); helper.WaitForExit(500); return false; }
+        return helper.ExitCode == 0 && Native.GetForegroundWindow().ToInt64() == window.Handle;
+    }
+    public bool PointerMatches(DesktopWindow window) => Native.GetCursorPos(out var point) && Native.GetAncestor(Native.WindowFromPoint(point), 2).ToInt64() == window.Handle;
+    public static bool ActivateWindow(long handle, int expectedPid, long expectedStart)
+    {
+        var h = new IntPtr(handle); Native.GetWindowThreadProcessId(h, out var pid); if (pid != expectedPid) return false;
+        using var process = Process.GetProcessById((int)pid); using var current = Process.GetCurrentProcess();
+        if (process.StartTime.ToUniversalTime().Ticks != expectedStart || process.SessionId != current.SessionId || DesktopName() != "Default" || Elevated(process.Handle)) return false;
+        _ = Native.PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
+        var thread = Native.GetCurrentThreadId(); var foregroundThread = Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out _); var targetThread = Native.GetWindowThreadProcessId(h, out _);
+        bool foregroundAttached = false, targetAttached = false;
         try
         {
-            if (!Native.GetTokenInformation(token, 20, out int elevated, 4, out _)) throw new DriverException(Error.ObservationUnavailable);
-            return elevated != 0;
+            if (foregroundThread != 0 && foregroundThread != thread) foregroundAttached = Native.AttachThreadInput(thread, foregroundThread, true);
+            if (targetThread != 0 && targetThread != thread && targetThread != foregroundThread) targetAttached = Native.AttachThreadInput(thread, targetThread, true);
+            _ = Native.BringWindowToTop(h); _ = Native.SetForegroundWindow(h); return Native.GetForegroundWindow() == h;
         }
-        finally { Native.CloseHandle(token); }
+        finally { if (targetAttached) Native.AttachThreadInput(thread, targetThread, false); if (foregroundAttached) Native.AttachThreadInput(thread, foregroundThread, false); }
     }
-    public static WindowIdentity Identify(long hwnd)
+    public void Close(DesktopWindow window) { if (!Native.PostMessage(new IntPtr(window.Handle), 0x10, IntPtr.Zero, IntPtr.Zero)) throw new GuiException("CloseWindowFailed"); }
+    private void Visible(DesktopWindow w)
     {
-        var handle = new IntPtr(hwnd);
-        if (!Native.IsWindow(handle) || !Native.IsWindowVisible(handle) || Native.IsIconic(handle)) throw new DriverException(Error.WindowChanged);
-        Native.GetWindowThreadProcessId(handle, out var pid);
-        using var process = Process.GetProcessById((int)pid);
-        if (IsElevated(process.Handle)) throw new DriverException(Error.Unsupported);
-        var identity = Processes.Identify(process);
-        var title = new StringBuilder(513);
-        Native.GetWindowText(handle, title, title.Capacity);
-        if (!Native.GetClientRect(handle, out var rect)) throw new DriverException(Error.ObservationUnavailable);
-        var point = new Native.Point();
-        if (!Native.ClientToScreen(handle, ref point)) throw new DriverException(Error.ObservationUnavailable);
-        return new(hwnd, (int)pid, identity.CreatedAt, identity.ImagePath, identity.ImageHash, title.ToString(),
-            new(point.X, point.Y, rect.Right - rect.Left, rect.Bottom - rect.Top));
-    }
-    public Observation Inspect()
-    {
-        if (!ConsoleValid(config.TargetSession)) throw new DriverException(Error.SessionChanged);
-        var windows = new List<WindowIdentity>();
-        Native.EnumWindows((hwnd, _) =>
+        var b = w.Bounds; if (b.Width <= 0 || b.Height <= 0 || (long)b.Width * b.Height > 16000000) throw new GuiException("ObservationUnavailable");
+        // Require complete monitor coverage, including gaps in nonrectangular monitor layouts.
+        var uncovered = new List<PixelRect> { b };
+        Native.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr m, IntPtr d, ref Native.NativeRect r, IntPtr x) =>
         {
-            try
+            var monitor = new PixelRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top); var next = new List<PixelRect>();
+            foreach (var region in uncovered)
             {
-                var title = new StringBuilder(513);
-                Native.GetWindowText(hwnd, title, title.Capacity);
-                if (!config.Windows.Any(w => w.Title == "*" || w.Title == title.ToString())) return true;
-                var identity = Identify(hwnd.ToInt64());
-                if (config.Windows.Any(w => (w.Title == "*" || w.Title == identity.Title) && string.Equals(w.ImagePath, identity.ImagePath, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(w.ImageHash, identity.ImageHash, StringComparison.OrdinalIgnoreCase))) windows.Add(identity);
+                if (!region.Intersects(monitor)) { next.Add(region); continue; }
+                int l = Math.Max(region.X, monitor.X), t = Math.Max(region.Y, monitor.Y), right = Math.Min(region.X + region.Width, monitor.X + monitor.Width), bottom = Math.Min(region.Y + region.Height, monitor.Y + monitor.Height);
+                if (region.Y < t) next.Add(new(region.X, region.Y, region.Width, t - region.Y)); if (bottom < region.Y + region.Height) next.Add(new(region.X, bottom, region.Width, region.Y + region.Height - bottom));
+                if (region.X < l) next.Add(new(region.X, t, l - region.X, bottom - t)); if (right < region.X + region.Width) next.Add(new(right, t, region.X + region.Width - right, bottom - t));
             }
-            catch { /* Inaccessible windows are not within the observable scope. */ }
-            return true;
+            uncovered = next; return true;
         }, IntPtr.Zero);
-        var monitors = new List<MonitorInfo>();
-        Native.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr monitorHandle, IntPtr _, ref Native.NativeRect rect, IntPtr _) =>
+        if (uncovered.Count != 0) throw new GuiException("ObservationUnavailable", "ClientOutsideMonitors");
+        bool covered = false, seen = false; string obstruction = "";
+        Native.EnumWindows((h, _) =>
         {
-            var info = new Native.Monitor { Size = Marshal.SizeOf<Native.Monitor>(), Device = "" };
-            if (!Native.GetMonitorInfo(monitorHandle, ref info)) return true;
-            uint x = 96, y = 96;
-            _ = Native.GetDpiForMonitor(monitorHandle, 0, out x, out y);
-            monitors.Add(new(info.Device, new(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top), x, y, (info.Flags & 1) != 0));
+            if (h.ToInt64() == w.Handle) { seen = true; return false; }
+            if (!Native.IsWindowVisible(h) || Native.IsIconic(h)) return true;
+            if (Native.DwmGetWindowAttribute(h, 14, out var cloaked, 4) == 0 && cloaked != 0) return true;
+            var style = Native.GetWindowLongPtr(h, -20).ToInt64();
+            // WGC captures only the target surface. Mouse-transparent layered overlays never become its pixels.
+            if ((style & 0x80020) == 0x80020) return true;
+            if (Native.GetLayeredWindowAttributes(h, out var colorKey, out var alpha, out var layerFlags) && (layerFlags & 2) != 0 && alpha == 0) return true;
+            if (Native.GetWindowRect(h, out var r) && new PixelRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top).Intersects(b))
+            {
+                int regionKind = 0; var region = Native.CreateRectRgn(0, 0, 0, 0);
+                try { if (region != IntPtr.Zero) { regionKind = Native.GetWindowRgn(h, region); if (regionKind == 1) return true; if (regionKind is 2 or 3) { Native.OffsetRgn(region, r.Left, r.Top); var client = new Native.NativeRect { Left = b.X, Top = b.Y, Right = b.X + b.Width, Bottom = b.Y + b.Height }; if (!Native.RectInRegion(region, ref client)) return true; } } } finally { if (region != IntPtr.Zero) Native.DeleteObject(region); }
+                Native.GetWindowDisplayAffinity(h, out var affinity); covered = true; var className = new StringBuilder(256); Native.GetClassName(h, className, 256); Native.GetWindowThreadProcessId(h, out var obstructingPid); obstruction = $"ClientOccluded pid={obstructingPid} class={className} rect={r.Left},{r.Top},{r.Right},{r.Bottom} styles={Native.GetWindowLongPtr(h, -20).ToInt64():x} alpha={alpha} layerFlags={layerFlags} regionKind={regionKind} affinity={affinity:x}";
+            }
             return true;
         }, IntPtr.Zero);
-        return new(config.TargetSession, DesktopName(), Native.GetForegroundWindow().ToInt64(), windows.ToArray(), monitors.ToArray(), false);
+        if (!seen || covered) throw new GuiException("ObservationUnavailable", !seen ? "WindowNotInVisibleZOrder" : obstruction);
     }
-    public string Capture(WindowIdentity window, string destination)
+    public byte[] Capture(DesktopWindow w, CancellationToken cancellation)
     {
-        if (Native.GetForegroundWindow().ToInt64() != window.Hwnd || Identify(window.Hwnd) != window) throw new DriverException(Error.WindowChanged);
-        var b = window.Bounds;
-        if (b.Width <= 0 || b.Height <= 0 || (long)b.Width * b.Height > 16_000_000) throw new DriverException(Error.ObservationUnavailable);
-        var screen = Native.GetDC(IntPtr.Zero);
-        var memory = Native.CreateCompatibleDC(screen);
-        var bitmap = Native.CreateCompatibleBitmap(screen, b.Width, b.Height);
-        if (screen == IntPtr.Zero || memory == IntPtr.Zero || bitmap == IntPtr.Zero)
-        {
-            if (bitmap != IntPtr.Zero) Native.DeleteObject(bitmap);
-            if (memory != IntPtr.Zero) Native.DeleteDC(memory);
-            if (screen != IntPtr.Zero) Native.ReleaseDC(IntPtr.Zero, screen);
-            throw new DriverException(Error.ObservationUnavailable);
-        }
-        var old = Native.SelectObject(memory, bitmap);
+        Visible(w); var store = new StateStore(privateCaptureDirectory); var path = store.PathFor("capture-helper-" + Guid.NewGuid().ToString("N") + ".png");
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var arg in new[] { "--capture", w.Handle.ToString(System.Globalization.CultureInfo.InvariantCulture), w.Process.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture), w.Process.CreatedAt.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture), path, w.Bounds.X.ToString(System.Globalization.CultureInfo.InvariantCulture), w.Bounds.Y.ToString(System.Globalization.CultureInfo.InvariantCulture), w.Bounds.Width.ToString(System.Globalization.CultureInfo.InvariantCulture), w.Bounds.Height.ToString(System.Globalization.CultureInfo.InvariantCulture) }) start.ArgumentList.Add(arg);
+        using var helper = Process.Start(start) ?? throw new GuiException("ObservationUnavailable"); var error = helper.StandardError.ReadToEndAsync();
         try
         {
-            if (!Native.BitBlt(memory, 0, 0, b.Width, b.Height, screen, b.X, b.Y, 0x40CC0020)) throw new DriverException(Error.ObservationUnavailable);
-            Native.SelectObject(memory, old);
-            var pixels = new byte[checked(b.Width * b.Height * 4)];
-            var header = new Native.BitmapInfo { Size = 40, Width = b.Width, Height = -b.Height, Planes = 1, BitCount = 32 };
-            if (Native.GetDIBits(memory, bitmap, 0, (uint)b.Height, pixels, ref header, 0) != b.Height || !pixels.Where((_, i) => i % 4 != 3).Any(v => v != 0))
-                throw new DriverException(Error.ObservationUnavailable);
-            if (Native.GetForegroundWindow().ToInt64() != window.Hwnd || Identify(window.Hwnd) != window) throw new DriverException(Error.WindowChanged);
-            var source = BitmapSource.Create(b.Width, b.Height, 96, 96, PixelFormats.Bgr32, null, pixels, b.Width * 4);
-            var encoder = new PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(source));
-            using var output = new FileStream(destination, FileMode.CreateNew);
-            encoder.Save(output);
-            return Wire.FileHash(destination);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation); timeout.CancelAfter(2200);
+            helper.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+            if (helper.ExitCode != 0) { var detail = error.GetAwaiter().GetResult(); throw new GuiException("ObservationUnavailable", "GraphicsCaptureFailed " + detail.Trim()); }
+            cancellation.ThrowIfCancellationRequested(); Visible(w); var after = Identify(w.Handle);
+            if (!WindowRegistry.Same(w, after) || w.Bounds != after.Bounds || w.Dpi != after.Dpi) throw new GuiException("StaleCapture");
+            return File.ReadAllBytes(path);
         }
-        finally
+        catch (OperationCanceledException) { if (!helper.HasExited) { helper.Kill(); helper.WaitForExit(500); } throw; }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+    public DesktopElement[] Controls(DesktopWindow w, CancellationToken cancellation)
+    {
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true }; start.ArgumentList.Add("--uia"); start.ArgumentList.Add(w.Handle.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        using var process = Process.Start(start) ?? throw new GuiException("ObservationUnavailable");
+        var read = process.StandardOutput.ReadToEndAsync(cancellation); var errors = process.StandardError.ReadToEndAsync(cancellation);
+        try
         {
-            Native.SelectObject(memory, old);
-            Native.DeleteObject(bitmap); Native.DeleteDC(memory); Native.ReleaseDC(IntPtr.Zero, screen);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation); timeout.CancelAfter(3000);
+            process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+            var text = read.GetAwaiter().GetResult(); if (process.ExitCode != 0) throw new GuiException("ObservationUnavailable", "UIAutomationHelperFailed"); return GuiProtocol.Decode<DesktopElement[]>(text);
         }
-    }
-    public UiNode[] Controls(WindowIdentity window)
-    {
-        // A broken UIA provider must not block input release or the pipe indefinitely.
-        var start = new ProcessStartInfo(clientExecutable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        start.ArgumentList.Add("--uia"); start.ArgumentList.Add(window.Hwnd.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        using var process = Process.Start(start) ?? throw new DriverException(Error.ObservationUnavailable);
-        var read = process.StandardOutput.ReadToEndAsync();
-        if (!process.WaitForExit(1500)) { process.Kill(); process.WaitForExit(500); throw new DriverException(Error.ObservationUnavailable); }
-        if (process.ExitCode != 0 || !read.Wait(100)) throw new DriverException(Error.ObservationUnavailable);
-        return Wire.Decode<UiNode[]>(read.Result);
-    }
-    public static UiNode[] ReadControls(long hwnd)
-    {
-        var root = AutomationElement.FromHandle(new IntPtr(hwnd));
-        var nodes = new List<UiNode>();
-        var queue = new Queue<(AutomationElement Element, int Depth)>();
-        queue.Enqueue((root, 0));
-        while (queue.Count != 0 && nodes.Count < 128)
+        catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         {
-            var (element, depth) = queue.Dequeue();
-            var current = element.Current; var b = current.BoundingRectangle;
-            // Editable/password contents are omitted. Raw UI labels and images remain private evidence.
-            var name = current.ControlType == ControlType.Edit || current.IsPassword ? "[redacted]" : current.Name;
-            string? toggle = element.TryGetCurrentPattern(TogglePattern.Pattern, out var pattern) ? ((TogglePattern)pattern).Current.ToggleState.ToString() : null;
-            nodes.Add(new(name[..Math.Min(name.Length, 512)], current.AutomationId, current.ControlType.ProgrammaticName,
-                b.IsEmpty ? new(0, 0, 0, 0) : new((int)b.X, (int)b.Y, (int)b.Width, (int)b.Height), current.IsEnabled, toggle));
-            if (depth >= 8) continue;
-            var child = TreeWalker.ControlViewWalker.GetFirstChild(element);
-            for (int i = 0; child != null && i < 64 && queue.Count < 128; i++, child = TreeWalker.ControlViewWalker.GetNextSibling(child)) queue.Enqueue((child, depth + 1));
+            if (!process.HasExited) { process.Kill(); process.WaitForExit(500); }
+            throw new GuiException("ObservationUnavailable", "UIAutomationTimeout");
+        }
+        finally { if (!process.HasExited) { process.Kill(); process.WaitForExit(500); } }
+    }
+    public static DesktopElement[] ReadControls(long handle)
+    {
+        var root = AutomationElement.FromHandle(new IntPtr(handle)); var nodes = new List<DesktopElement>(); var queue = new Queue<(AutomationElement, int)>(); queue.Enqueue((root, 0));
+        var origin = new Native.Point(); if (!Native.ClientToScreen(new IntPtr(handle), ref origin)) throw new GuiException("WindowNotFound");
+        while (queue.Count > 0 && nodes.Count < 1024)
+        {
+            var (element, depth) = queue.Dequeue(); var c = element.Current; var b = c.BoundingRectangle; ElementValue value;
+            if (c.IsPassword) value = new(false, null, "Password");
+            else if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var v)) value = new(true, ((ValuePattern)v).Current.Value, null);
+            else if (element.TryGetCurrentPattern(TextPattern.Pattern, out var t)) value = new(true, ((TextPattern)t).DocumentRange.GetText(65537), null);
+            else value = new(false, null, "NotSupported");
+            if (value.Available && value.Text?.Length > 65536) value = new(false, null, "ValueTooLarge");
+            nodes.Add(new(string.Join("-", element.GetRuntimeId()), c.AutomationId, c.IsPassword ? "[password]" : c.Name, c.ControlType.ProgrammaticName, b.IsEmpty ? new(0, 0, 0, 0) : new((int)Math.Round(b.X) - origin.X, (int)Math.Round(b.Y) - origin.Y, (int)Math.Round(b.Width), (int)Math.Round(b.Height)), c.IsEnabled, value));
+            if (depth >= 16) continue; var child = TreeWalker.ControlViewWalker.GetFirstChild(element);
+            for (int i = 0; child != null && i < 256 && queue.Count < 1024; i++, child = TreeWalker.ControlViewWalker.GetNextSibling(child)) queue.Enqueue((child, depth + 1));
         }
         return nodes.ToArray();
     }
-    public bool Focus(WindowIdentity window) => Native.SetForegroundWindow(new IntPtr(window.Hwnd)) && Native.GetForegroundWindow().ToInt64() == window.Hwnd;
-}
-
-public sealed class WindowsInput : IInputBackend
-{
-    internal static readonly UIntPtr Marker = InputConflictPolicy.DriverMarker;
-    public bool IsDown(string kind, int code) => (Native.GetAsyncKeyState(kind == "button" ? code switch { 1 => 1, 2 => 2, 3 => 4, _ => throw new DriverException(Error.InvalidRequest) } : code) & 0x8000) != 0;
-    public void Down(string kind, int code) => Send(kind, code, false);
-    public void Up(string kind, int code) => Send(kind, code, true);
-    private static void Send(string kind, int code, bool up)
-    {
-        Native.Input input;
-        if (kind == "button")
-        {
-            uint flag = code switch { 1 => up ? 4u : 2u, 2 => up ? 16u : 8u, 3 => up ? 64u : 32u, _ => throw new DriverException(Error.InvalidRequest) };
-            input = new() { Type = 0, Mouse = new() { Flags = flag, Extra = Marker } };
-        }
-        else input = new() { Type = 1, Keyboard = new() { Vk = kind == "unicode" ? (ushort)0 : (ushort)code,
-            Scan = kind == "unicode" ? (ushort)code : (ushort)0, Flags = (up ? 2u : 0u) | (kind == "unicode" ? 4u : Extended(code)), Extra = Marker } };
-        Inject(input);
-    }
-    private static uint Extended(int vk) => vk is 0x21 or 0x22 or 0x23 or 0x24 or 0x25 or 0x26 or 0x27 or 0x28 or 0x2D or 0x2E or 0xA3 or 0xA5 or 0x5B or 0x5C ? 1u : 0u;
-    public void Move(int x, int y)
-    {
-        int left = Native.GetSystemMetrics(76), top = Native.GetSystemMetrics(77), width = Native.GetSystemMetrics(78), height = Native.GetSystemMetrics(79);
-        if (width <= 1 || height <= 1 || x < left || y < top || x >= left + width || y >= top + height) throw new DriverException(Error.InvalidRequest);
-        Inject(new() { Type = 0, Mouse = new() { X = (int)Math.Round((x - left) * 65535.0 / (width - 1)), Y = (int)Math.Round((y - top) * 65535.0 / (height - 1)), Flags = 0xC001, Extra = Marker } });
-    }
-    public void Wheel(int delta) => Inject(new() { Type = 0, Mouse = new() { Data = unchecked((uint)delta), Flags = 0x800, Extra = Marker } });
-    private static void Inject(Native.Input input)
-    {
-        if (Native.SendInput(1, [input], Marshal.SizeOf<Native.Input>()) != 1) throw new DriverException(Error.InjectionFailed);
-    }
-}
-
-public static class InputConflictPolicy
-{
-    public static readonly UIntPtr DriverMarker = new(0x44544431);
-    public static bool IsConflict(bool injected, UIntPtr marker, bool delegatedExternalInput) =>
-        !injected || marker != DriverMarker && !delegatedExternalInput;
-    public static bool ExternalInputAllowed(RunStore store) =>
-        !store.Stopped && store.Config.Delegation!.ProductPermissions.Contains("control") &&
-        File.Exists(store.PathFor("input-sealed.json"));
-}
-
-public sealed class PhysicalInputMonitor : IDisposable
-{
-    private readonly Func<bool> allowExternalInjection;
-    private readonly Thread thread;
-    private readonly ManualResetEventSlim ready = new();
-    private uint threadId;
-    private volatile bool conflict;
-    private bool installed;
-    public bool Conflict => conflict;
-    public PhysicalInputMonitor(Func<bool>? allowExternalInjection = null)
-    {
-        this.allowExternalInjection = allowExternalInjection ?? (() => false);
-        thread = new Thread(Pump) { IsBackground = true, Name = "DesktopTestDriver input guard" };
-        thread.Start();
-        if (!ready.Wait(2000) || !installed) throw new DriverException(Error.ObservationUnavailable);
-    }
-    private void Pump()
-    {
-        threadId = Native.GetCurrentThreadId();
-        Native.HookCallback keyCallback = (code, message, data) =>
-        {
-            if (code >= 0)
-            {
-                var value = Marshal.PtrToStructure<Native.KeyHook>(data);
-                if (InputConflictPolicy.IsConflict((value.Flags & 0x10) != 0, value.Extra, Delegated())) conflict = true;
-            }
-            return Native.CallNextHookEx(IntPtr.Zero, code, message, data);
-        };
-        Native.HookCallback mouseCallback = (code, message, data) =>
-        {
-            if (code >= 0)
-            {
-                var value = Marshal.PtrToStructure<Native.MouseHook>(data);
-                if (InputConflictPolicy.IsConflict((value.Flags & 1) != 0, value.Extra, Delegated())) conflict = true;
-            }
-            return Native.CallNextHookEx(IntPtr.Zero, code, message, data);
-        };
-        var key = Native.SetWindowsHookEx(13, keyCallback, IntPtr.Zero, 0);
-        var mouse = Native.SetWindowsHookEx(14, mouseCallback, IntPtr.Zero, 0);
-        installed = key != IntPtr.Zero && mouse != IntPtr.Zero;
-        ready.Set();
-        try { if (installed) while (Native.GetMessage(out var message, IntPtr.Zero, 0, 0) > 0) { Native.TranslateMessage(ref message); Native.DispatchMessage(ref message); } }
-        finally { if (key != IntPtr.Zero) Native.UnhookWindowsHookEx(key); if (mouse != IntPtr.Zero) Native.UnhookWindowsHookEx(mouse); GC.KeepAlive(keyCallback); GC.KeepAlive(mouseCallback); }
-    }
-    private bool Delegated() { try { return allowExternalInjection(); } catch { return false; } }
-    public void Dispose() { Native.PostThreadMessage(threadId, 0x12, UIntPtr.Zero, IntPtr.Zero); thread.Join(1000); ready.Dispose(); }
-}
-
-internal static class Native
-{
-    [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
-    [StructLayout(LayoutKind.Sequential)] public struct NativeRect { public int Left, Top, Right, Bottom; }
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct Monitor { public int Size; public NativeRect Bounds, Work; public uint Flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Device; }
-    [StructLayout(LayoutKind.Sequential)] public struct BitmapInfo { public uint Size; public int Width, Height; public ushort Planes, BitCount; public uint Compression, SizeImage; public int X, Y; public uint Used, Important; }
-    [StructLayout(LayoutKind.Explicit, Size = 40)] public struct Input { [FieldOffset(0)] public uint Type; [FieldOffset(8)] public MouseInput Mouse; [FieldOffset(8)] public KeyboardInput Keyboard; }
-    [StructLayout(LayoutKind.Sequential)] public struct MouseInput { public int X, Y; public uint Data, Flags, Time; public UIntPtr Extra; }
-    [StructLayout(LayoutKind.Sequential)] public struct KeyboardInput { public ushort Vk, Scan; public uint Flags, Time; public UIntPtr Extra; }
-    [StructLayout(LayoutKind.Sequential)] public struct KeyHook { public uint Vk, Scan, Flags, Time; public UIntPtr Extra; }
-    [StructLayout(LayoutKind.Sequential)] public struct MouseHook { public Point Point; public uint Data, Flags, Time; public UIntPtr Extra; }
-    [StructLayout(LayoutKind.Sequential)] public struct Message { public IntPtr Window; public uint Id; public UIntPtr WParam; public IntPtr LParam; public uint Time; public Point Point; public uint Private; }
-    public delegate bool EnumWindow(IntPtr hwnd, IntPtr data);
-    public delegate bool EnumMonitor(IntPtr monitor, IntPtr hdc, ref NativeRect rect, IntPtr data);
-    public delegate IntPtr HookCallback(int code, IntPtr message, IntPtr data);
-    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
-    [DllImport("user32.dll")] public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
-    [DllImport("user32.dll")] public static extern bool CloseDesktop(IntPtr desktop);
-    [DllImport("user32.dll")] public static extern IntPtr GetThreadDesktop(uint id);
-    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder buffer, int length, out int needed);
-    [DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
-    [DllImport("advapi32.dll", SetLastError = true)] public static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-    [DllImport("advapi32.dll", SetLastError = true)] public static extern bool GetTokenInformation(IntPtr token, int kind, out int value, int length, out int needed);
-    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
-    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr window);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
-    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
-    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window, out NativeRect rect);
-    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr window, ref Point point);
-    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindow callback, IntPtr data);
-    [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr dc, IntPtr clip, EnumMonitor callback, IntPtr data);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref Monitor info);
-    [DllImport("shcore.dll")] public static extern int GetDpiForMonitor(IntPtr monitor, int type, out uint x, out uint y);
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
-    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr window);
-    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr window, IntPtr dc);
-    [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr dc);
-    [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleBitmap(IntPtr dc, int width, int height);
-    [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-    [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr obj);
-    [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
-    [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr dst, int x, int y, int width, int height, IntPtr src, int sx, int sy, uint operation);
-    [DllImport("gdi32.dll")] public static extern int GetDIBits(IntPtr dc, IntPtr bitmap, uint first, uint lines, byte[] pixels, ref BitmapInfo info, uint usage);
-    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
-    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
-    [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint count, Input[] inputs, int size);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SetWindowsHookEx(int kind, HookCallback callback, IntPtr module, uint thread);
-    [DllImport("user32.dll")] public static extern bool UnhookWindowsHookEx(IntPtr hook);
-    [DllImport("user32.dll")] public static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetMessage(out Message message, IntPtr window, uint min, uint max);
-    [DllImport("user32.dll")] public static extern bool TranslateMessage(ref Message message);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr DispatchMessage(ref Message message);
-    [DllImport("user32.dll")] public static extern bool PostThreadMessage(uint thread, uint message, UIntPtr wparam, IntPtr lparam);
 }
