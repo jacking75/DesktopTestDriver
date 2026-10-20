@@ -41,7 +41,7 @@ await Test("G01 published JSON request examples match the implemented API", () =
     var repository = new DirectoryInfo(AppContext.BaseDirectory);
     while (repository != null && !File.Exists(Path.Combine(repository.FullName, "DesktopTestDriver.slnx"))) repository = repository.Parent;
     Check(repository != null, "repository documentation not found"); int examples = 0;
-    foreach (var file in new[] { "README.md", "docs/agent-usage.md", "docs_working/간단한-GUI-테스트-사용매뉴얼-11.md" })
+    foreach (var file in new[] { "README.md", "docs/agent-usage.md", "docs/gui-test-guide.md" })
     {
         var markdown = File.ReadAllText(Path.Combine(repository!.FullName, file));
         foreach (System.Text.RegularExpressions.Match fence in System.Text.RegularExpressions.Regex.Matches(markdown, @"```json\s*\r?\n([\s\S]*?)```"))
