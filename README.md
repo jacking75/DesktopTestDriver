@@ -1,213 +1,171 @@
-# DesktopTestDriver
+<p align="center">
+  <img src="docs/assets/remote-gui-hero.png" alt="DesktopTestDriver — 작업 PC의 코딩 에이전트가 네트워크 너머 원격 Windows 머신의 GUI 앱을 제어한다" width="100%">
+</p>
 
-> **DesktopTestDriver는 코딩 에이전트가 작업 PC 자체와 원격 Windows PC의 GUI 프로그램을 관측하고 조작하는 도구다.**
+<p align="center">
+  <strong>코딩 에이전트가 원격 Windows 머신의 GUI 앱을 보고, 조작하고, 결과를 확인한다.</strong><br>
+  에이전트는 작업 PC에, 조작할 앱은 네트워크 너머 다른 PC에.
+</p>
 
-DesktopTestDriver는 **코딩 에이전트와 같은 PC에서 실행하는 Controller.exe**와 **관측하거나 조작할 각 PC에서 실행하는 Agent.exe**로 구성된다. 작업 PC 자체를 조작할 때도 같은 PC에 Agent를 실행한다. 코딩 에이전트는 Controller에 GUI 명령을 요청하고, Controller는 선택한 Agent에 전달해 실행 결과와 관측값을 돌려준다. 원격 파일·프로세스·서비스·로그 작업에는 기존 SSH를 사용하며, 같은 PC의 파일 작업에는 일반 로컬 명령을 사용한다.
+<p align="center">
+  <a href="#빠르게-시작하기">빠르게 시작하기</a> ·
+  <a href="docs/gui-test-guide.md">GUI 테스트 가이드</a> ·
+  <a href="docs/agent-usage.md">명령·설정 레퍼런스</a>
+</p>
 
-코딩 에이전트가 계획을 세우고 필요한 GUI 명령을 하나씩 요청한다. 도구가 반환한 관측값과 화면을 보고 다음 행동과 제품의 성공·실패를 판단하는 주체도 코딩 에이전트다.
+---
 
-API 1의 Controller·Agent와 아래 GUI 작업을 구현했다. 설치·설정과 실제 명령·필드·응답·오류 처리 방법은 [사용 규약](docs/agent-usage.md)을 따른다. 처음 사용할 때는 [간단한 GUI 테스트 매뉴얼](docs/gui-test-guide.md)을 참고한다.
+## 무엇을 하는 도구인가
 
-일반 사용자가 로그인한 콘솔 바탕화면을 지원한다. 관리자 창·잠금·RDP·HDR 및 개별 제품의 동작은 별도 검증이 필요하다.
+**DesktopTestDriver는 코딩 에이전트가 원격 Windows 머신의 GUI 앱을 조작할 수 있게 해 주는 도구다.** 에이전트가 실행되는 작업 PC에서 명령을 보내면, 다른 PC에 있는 앱을 실행하고, 버튼을 클릭하고, 문자를 입력하고, 화면을 캡처한다.
 
-## 구현 기능 목록
+Computer Use로 자신의 PC를 조작하는 에이전트도 **다른 머신의 화면을 읽고 그곳에 입력을 전달하려면 원격 제어 경로가 필요하다.** DesktopTestDriver는 작업 PC의 Controller와 원격 PC의 Agent를 연결해 이 경로를 제공한다. 에이전트가 원격 PC로 옮겨 갈 필요 없이, 원격 앱의 UI 정보와 화면을 돌려받아 작업을 이어 간다.
 
-아래는 API 1의 구현된 작업이다. 코딩 에이전트가 Controller에 작업을 하나씩 요청하면, 대상 PC의 Agent가 수행하고 결과를 돌려준다. 대상은 Agent가 실행 중인 Windows PC이며, 작업 PC 자체와 원격 PC를 모두 포함한다.
+예를 들어 “**원격 테스트 PC**의 메모 앱에 문장을 입력하고 저장한 뒤, 다시 열어서 내용이 같은지 확인하라”는 작업을 맡길 수 있다. 작업 순서와 성공 여부는 작업 PC의 코딩 에이전트가 판단하고, 원격 PC의 Agent가 실제 GUI 명령을 수행한다.
 
-| 기능 | 할 수 있는 일 |
+| 이런 작업에 | 이렇게 활용한다 |
 |---|---|
-| 연결된 PC 확인 | 연결된 Agent 목록을 읽고 조작할 PC를 선택한다 |
-| PC 상태·지원 기능 확인 | 사용자가 로그인한 바탕화면과 조작 가능 상태, 지원하는 작업과 제한을 확인한다 |
-| 여러 PC 구분 | PC별로 연결을 열어 명령을 보내고, 어느 PC에서 나온 결과인지 구분한다 |
-| 조작 연결 관리 | 같은 PC에 여러 명령을 이어서 보내는 제어 세션을 열고, 상태 조회·종료·유휴 시간 만료를 처리한다 |
-| 관측 전용 연결 | 클릭·입력·창 활성화 없이 창·버튼 정보와 화면만 읽는다 |
-| GUI 프로그램 실행 | 대상 PC의 실행 파일 경로와 실행 인자를 지정해 프로그램을 연다 |
-| 창 찾기 | 열린 창의 제목·실행 파일·프로그램 번호·위치를 읽어 대상 창을 찾는다 |
-| 버튼·입력칸 찾기 | 창 안의 버튼·입력칸·선택 항목을 찾고 이름·위치·사용 가능 여부를 읽는다 |
-| 표시 값 읽기 | 프로그램이 읽기를 허용하는 입력칸의 문자와 표시 값을 가져온다. 암호 등 읽을 수 없는 값은 그 이유를 알린다 |
-| 창 화면 캡처 | 대상 창의 화면을 이미지로 저장하고 크기·좌표·촬영 시각을 반환한다 |
-| 캡처 이미지 전달 | 대상 PC에서 캡처한 이미지를 Controller가 실행되는 작업 PC에 저장하고 파일 경로를 반환한다 |
-| 창 활성화 | 조작할 창을 앞에 띄우고 키보드 입력을 받을 창으로 지정한다 |
-| 마우스 클릭 | 조회한 버튼·입력칸 또는 캡처에서 확인한 좌표를 왼쪽·오른쪽·가운데 버튼으로 클릭한다 |
-| 마우스 이동·끌기·스크롤 | 포인터를 옮기고, 버튼을 누른 채 끌고, 휠로 화면을 스크롤한다 |
-| 문자 입력 | 선택한 입력칸에 한글·영문 등의 문자열을 입력한다 |
-| 키보드 조작 | Enter·Tab·방향키·기능키 등을 누르고 떼거나, Ctrl+A 같은 키 조합을 보낸다 |
-| 입력 해제 | 도구가 누른 키와 마우스 버튼을 해제한다. 누름 시간 제한·세션 종료·장애 시에는 독립 감시가 해제를 시도하고 확인한 결과를 남긴다 |
-| 창 닫기·프로그램 종료 | 창 닫기를 요청하거나, 해당 제어 세션에서 도구가 실행한 프로그램을 지정해 종료한다 |
-| 실행한 앱의 유지 여부 선택 | 제어 세션을 닫을 때 실행한 앱을 유지할지 함께 종료할지 지정한다 |
-| 요청 결과 반환 | 요청한 작업의 완료·실패·거부·실행 여부 불명확 상태와 확인한 정보를 반환한다 |
-| 이전 요청 결과 조회 | 응답을 받지 못한 요청의 실행 상태와 결과를 다시 조회한다 |
-| 같은 요청의 중복 실행 방지 | 기록 보관 기간 안에 같은 요청 번호와 내용이 다시 오면 저장된 결과를 돌려주어 입력이 중복되지 않게 한다 |
-| 잘못된 대상 입력 차단 | 창이 바뀌었거나 캡처가 오래됐거나 대상 버튼이 모호하면 입력 전에 거부하고 이유를 반환한다 |
+| **별도 테스트 PC의 앱 확인** | 원격 PC에서 입력 → 저장 → 다시 열기를 수행하고 결과를 회수한다 |
+| **원격 환경의 UI 점검** | 다른 Windows 머신의 버튼·입력칸과 표시 값을 읽고 화면을 남긴다 |
+| **여러 원격 PC의 결과 비교** | machineId로 대상을 선택해 각 PC의 UI와 캡처를 비교한다 |
+| **PC 사이의 연동 테스트** | 한 원격 PC는 조작하고 다른 원격 PC는 관측 전용으로 열어 변화를 확인한다 |
 
-이 기능을 조합하면 메모 입력·저장·다시 열기, 설정 화면 조작, 브라우저에서 실행하는 제품의 화면·입력 테스트 등을 진행할 수 있다. 시험 순서와 성공·실패 판단은 코딩 에이전트가 맡는다. 파일 전송·로그 수집·서비스 관리는 코딩 에이전트가 로컬 명령과 기존 SSH로 수행한다.
+## 한눈에 보는 사용 흐름
 
-## 역할
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/control-loop.png">
+  <img src="docs/assets/control-loop.gif" alt="작업 PC의 에이전트가 원격 PC의 화면을 읽고, 문자를 입력하고, 버튼을 클릭한 뒤 원격 앱의 결과 화면을 돌려받는 설명 애니메이션" width="100%">
+</picture>
 
-| 작업 | 담당 |
+*위 애니메이션은 활용 흐름을 설명하는 예시이며 실제 앱의 실행 녹화가 아니다.*
+
+**원격 화면 관측 → 원격 앱 조작 → 결과 회수**를 반복한다. 클릭과 입력은 원격 PC에서 실행되고, UI 정보와 캡처 이미지는 에이전트가 있는 작업 PC로 돌아온다. 에이전트는 원격 앱의 화면을 보고 다음 행동과 성공 여부를 판단한다.
+
+## 어떤 일을 할 수 있나
+
+| 기능 | 제공하는 작업 |
 |---|---|
-| 조작 계획·순서·대기·재시도 | 코딩 에이전트 |
-| 작업 PC와 원격 PC의 작업 조율 | 코딩 에이전트 |
-| 파일·프로세스·서비스·로그 관리 | 코딩 에이전트가 로컬 명령과 기존 SSH 사용 |
-| GUI 앱 실행·창 조회·화면 캡처·입력 | DesktopTestDriver |
-| 제품 기능의 성공·실패 판정 | 코딩 에이전트 |
-| 제품 연결 종료·설정 복원 계획 | 코딩 에이전트 |
-| 도구가 누른 키·마우스 버튼의 해제 | DesktopTestDriver |
+| **화면과 UI 읽기** | 창 목록, 버튼·입력칸 조회, 표시 값 읽기, 창 화면 캡처 |
+| **마우스·키보드 조작** | 클릭, 이동, 끌기, 스크롤, 한글·영문 입력, 키 조합 |
+| **앱과 연결 관리** | 앱 실행, 창 닫기, 도구가 실행한 앱 종료, PC별 세션 관리 |
+| **관측 전용 사용** | 클릭이나 창 활성화 없이 UI와 화면만 조회 |
+| **입력 복구와 결과 조회** | 누른 키·버튼 해제, 장애 시 독립 감시, 원래 요청의 실행 결과 재조회 |
 
-DesktopTestDriver의 실행 결과는 요청한 GUI 명령의 수행 여부와 관측값이다. 클릭 입력 전달 완료가 제품 연결 성공을 뜻하지는 않는다.
+연결에는 등록한 인증서를 사용한다. 같은 요청 번호와 내용을 다시 보내면 보관된 결과를 반환해 중복 실행을 막는다. 응답을 잃은 입력은 결과부터 조회하고, 화면을 다시 확인한 뒤 다음 행동을 결정한다.
 
-## 동작 구조
+## 어떻게 연결되나
 
-**Controller.exe와 Agent.exe는 서로 다른 역할의 프로그램이다. 같은 PC에도 함께 실행할 수 있다.**
+![작업 PC의 코딩 에이전트와 Controller가 네트워크를 통해 별도의 원격 Windows PC에 있는 Agent와 GUI 앱을 제어하는 구조](docs/assets/architecture.svg)
 
-| 프로그램 | 설치·실행 위치 | 역할 | 소스 프로젝트 |
-|---|---|---|---|
-| **Controller.exe** | **코딩 에이전트와 같은 PC** | 코딩 에이전트의 요청을 받아 같은 PC 또는 원격 PC의 Agent에 전달하고 결과·이미지를 반환 | `src/Controller/Controller.csproj` |
-| **Agent.exe** | **관측하거나 조작할 각 Windows PC** | 로그인된 사용자 바탕화면에서 실제 GUI 관측·입력과 제어 세션을 관리 | `src/Agent/Agent.csproj` |
+| 프로그램 | 설치할 곳 | 하는 일 |
+|---|---|---|
+| **Controller.exe** | 코딩 에이전트와 같은 작업 PC | CLI 요청을 받아 대상 Agent에 전달하고 결과·이미지를 수집한다 |
+| **Agent.exe** | 조작하거나 관측할 원격 Windows PC마다 | 그 PC에 로그인된 바탕화면에서 실제 GUI 명령을 수행한다 |
 
-Core와 Contracts는 공통 라이브러리다. 사용자 실행 파일은 Controller.exe와 Agent.exe 두 종류다.
+작업 PC에는 코딩 에이전트와 Controller를 두고, 원격 PC에는 Agent와 조작할 앱을 둔다. 각 Agent가 작업 PC의 Controller에 연결하며, 에이전트는 `machineId`로 원격 머신을 선택한다. **GUI 명령은 원격 머신에서 실행되고, 실행 결과와 이미지는 작업 PC로 돌아온다.**
 
-```mermaid
-flowchart LR
-    subgraph L[작업 PC A]
-        A[코딩 에이전트] -->|명령 요청| C[Controller.exe]
-        GA[Agent.exe] <-->|관측·입력| PA[브라우저 등 GUI 프로그램]
-        C <-->|GUI 명령·응답·이미지| GA
-    end
-    subgraph R[원격 PC B]
-        G[Agent.exe] <-->|관측·입력| P[GUI 프로그램]
-    end
-    C <-->|GUI 명령·응답·이미지| G
-    A -->|기존 SSH: 파일·로그·프로세스 작업| R
-```
+파일 복사·로그 수집·서비스 관리에는 작업 PC의 로컬 명령이나 기존 SSH를 함께 사용한다.
 
-**Controller를 없애거나 Agent 하나로 합치는 구조가 아니다.** Controller와 Agent 사이의 기존 통신 경로를 재사용한다. Controller는 여러 Agent 연결을 관리하고 GUI 요청을 전달하지만, 시나리오를 실행하거나 제품의 성공·실패를 판정하지 않는다.
+## 빠르게 시작하기
 
-Agent는 각 PC의 로그인된 바탕화면에서 실행한다. 같은 PC A의 Agent도 원격 PC B의 Agent와 같은 요청 형식을 사용한다. 코딩 에이전트가 이미 사용하는 SSH 연결과 GUI 명령 전달 경로는 구분한다. 별도 SSH 클라이언트를 새로 만들지 않는다.
+### 1. 패키지 만들기
 
-Agent의 UI 조회와 독립 입력 감시는 같은 Agent.exe의 내부 모드를 별도 프로세스로 실행한다. 제품 패키지에 검증용 앱을 포함하지 않는다.
-
-## 에이전트의 사용 흐름
-
-1. 코딩 에이전트와 같은 PC에서 Controller를 사용한다. 관측하거나 조작할 각 PC에는 Agent가 기동되어 있어야 한다.
-2. Controller로 연결된 Agent와 지원 범위를 조회하고, 대상 machineId를 지정해 조작 또는 관측 전용 세션을 연다.
-3. 창·UI 정보를 조회하거나 화면을 캡처해 조작 대상을 찾는다.
-4. 클릭·문자 입력 등 필요한 GUI 명령을 요청한다.
-5. 반환된 정보·이미지와 로컬 명령·SSH로 확인한 로그를 보고 다음 행동을 정한다. 입력 응답을 잃으면 같은 입력을 바로 반복하지 않고 원래 요청 결과부터 조회한다.
-6. 작업을 마치면 필요한 제품 연결·앱 종료와 설정 복원을 요청하고 제어 세션을 닫아 입력 해제 결과를 확인한다.
-
-제어 세션은 여러 명령이 같은 데스크톱을 이어서 조작하기 위한 문맥이다. 시험 계획이나 기대 결과를 담지 않는다. Controller 요청 프로세스가 종료돼도 Agent와 세션은 유지되며, 에이전트가 화면을 분석하는 동안 계속해서 명령을 보낼 필요는 없다.
-
-## 요청과 응답
-
-다음은 요청 방식의 예다. 코딩 에이전트가 자신이 실행되는 머신에 요청 파일을 작성하고 그 머신의 Controller.exe를 실행한다. 세션·창·요소 식별값은 실제 관측 결과에서 얻는다. 변경 입력 전에는 별도의 focus 요청으로 대상 창을 활성화한다.
-
-```powershell
-.\Controller.exe --request .\click.json
-```
-
-`click.json`에는 한 번의 GUI 명령만 넣는다.
-
-```json
-{
-  "apiVersion": 1,
-  "requestId": "click-001",
-  "controlSessionId": "control-001",
-  "operation": "click",
-  "arguments": {
-    "windowId": "win-007",
-    "automationId": "ConnectButton"
-  }
-}
-```
-
-이 파일은 명령 메시지다. 단계 배열·분기·기대 결과를 담는 시나리오가 아니다. 명령을 받은 도구는 실행 결과를 반환한다.
-
-```json
-{
-  "apiVersion": 1,
-  "requestId": "click-001",
-  "controlSessionId": "control-001",
-  "operation": "click",
-  "machineId": "target-01",
-  "status": "completed",
-  "data": { "windowId": "win-007", "inputEventsSent": 3, "inputReleased": true },
-  "error": null,
-  "observedAt": "2026-10-20T06:30:00Z"
-}
-```
-
-`completed`는 클릭 입력 전달을 마쳤다는 뜻이다. 에이전트는 이후 화면·UI 정보·로그를 보고 제품의 동작을 판단한다. Agent가 캡처한 이미지는 Controller가 수집해 코딩 에이전트가 실행되는 머신에 저장한다. 에이전트는 반환된 경로의 실제 이미지를 열어 본다.
-
-명령 오류가 나도 가능한 관측을 유지해 에이전트가 다시 판단할 수 있게 한다. 입력 해제와 앱 종료를 분리하고, 제어 세션을 닫았다는 이유만으로 제품 앱을 무조건 종료하지 않는다.
-
-## 빌드와 설치
-
-### 빌드 환경
-
-Windows 10/11 x64에서 저장소 루트의 PowerShell로 실행한다. 빌드 PC에는 .NET 10 SDK가 필요하며, 같은 메이저 버전 10 계열의 마이너·패치 버전 차이로 빌드를 제한하지 않는다. 배포 대상 PC에는 .NET 10 Desktop Runtime x64가 필요하다.
-
-```powershell
-dotnet --list-sdks
-dotnet --version
-```
-
-SDK 버전을 저장소에서 고정하지 않으므로 빌드에 사용하는 SDK는 `dotnet --version`으로 확인한다. 프로젝트의 대상 프레임워크는 `net10.0-windows10.0.19041.0`이다.
-
-### 개발용 빌드 (Debug)
-
-코드를 수정하고 디버거로 실행할 때 사용한다. 패키지 잠금 파일을 기준으로 의존성을 복원한 뒤 솔루션을 Debug로 빌드한다.
-
-```powershell
-dotnet restore DesktopTestDriver.slnx --locked-mode
-dotnet build DesktopTestDriver.slnx -c Debug --no-restore
-```
-
-주요 실행 파일은 다음 위치에 생성된다.
-
-| 프로그램 | 개발용 실행 파일 |
-|---|---|
-| Controller | `bin/Debug/Controller/Controller.exe` |
-| Agent | `bin/Debug/Agent/Agent.exe` |
-
-프로젝트별 하위 폴더로 구분하며 .NET 버전명 폴더는 생성하지 않는다. `dotnet build DesktopTestDriver.slnx -c Release`의 일반 빌드 결과는 같은 구조의 `bin/Release`에 생성된다.
-
-### 라이브 배포용 빌드 (Release)
-
-실제 사용할 PC에 배치할 때는 다음 명령으로 Windows x64용 Release 패키지를 만든다. 의존성 복원, 솔루션 빌드, Controller·Agent 게시와 문서·설정 복사를 수행한다.
+Windows 10/11 x64와 **.NET 10 SDK**가 설치된 PC에서 실행한다.
 
 ```powershell
 .\build.ps1 -Package
 ```
 
-마지막 줄에 출력되는 `bin/live_Release`가 배포 산출물 폴더다. 라이브 배포용 폴더는 구성 이름 앞에 `live_`를 붙인다.
+`bin/live_Release`에 배포할 폴더가 만들어진다. 실행할 각 PC에는 **.NET 10 Desktop Runtime x64**가 필요하다.
 
-```text
-bin/live_Release/
-  Controller/               Controller.exe와 실행에 필요한 DLL·설정·문서·관리 스크립트
-  Agent/                    Agent.exe와 실행에 필요한 DLL·설정·문서·관리 스크립트
-  test-apps/SimpleMemo/      별도 시험용 메모 프로그램
-  test-apps/InputWindow/     별도 시험용 입력 확인 프로그램
-```
+| 폴더 | 배치할 곳 |
+|---|---|
+| `Controller/` | 코딩 에이전트가 있는 작업 PC |
+| `Agent/` | GUI를 조작·관측할 각 원격 Windows PC |
+| `test-apps/` | 예제를 따라 할 때 원격 PC에서 실행할 메모·입력 확인 앱 |
 
-작업 PC에는 `Controller` 폴더 전체를, 관측·조작할 각 PC에는 `Agent` 폴더 전체를 복사한다. 작업 PC 자체를 조작하려면 그 PC에 두 폴더를 함께 배치한다. `test-apps`는 도구 검증에 사용할 때만 별도로 복사한다.
+### 2. 연결 준비하기
 
-Debug 구성의 라이브 배포용 패키지가 필요하면 다음 명령으로 `bin/live_Debug`에 생성한다.
+[최초 설정 가이드](docs/agent-usage.md#최초-설정과-상주-실행)에 따라 역할별 상태 폴더를 만들고 공개 인증서를 교환·등록한다. Controller는 원격 PC에서 도달 가능한 주소로 수신하도록 설정하고, 설정한 TCP 포트의 방화벽 접근을 준비한다. 원격 PC의 Agent에는 이 Controller의 주소와 포트를 지정한 뒤 두 프로그램을 시작한다.
+
+Agent는 원격 PC에 로그인한 일반 사용자의 콘솔 바탕화면에서 실행한다. 지원 범위는 일반 사용자 GUI이며 관리자 창·잠금 화면·RDP 세션과 HDR 색 정확도는 보장 범위에 포함하지 않는다.
+
+### 3. 에이전트에게 작업 맡기기
+
+코딩 에이전트에 **작업 PC의 Controller 경로, 원격 PC의 machineId, 원격 앱에서 수행할 작업**을 알려 준다. 다음은 다른 Windows 머신에 설치한 메모 앱을 사용하는 요청 예시다. 경로와 PC 이름은 자신의 환경에 맞게 바꾼다.
+
+> 작업 PC의 Controller는 `C:\DesktopTestDriver\Controller\Controller.exe`다.<br>
+> 조작할 대상은 다른 Windows 머신 `remote-pc`다.<br>
+> DesktopTestDriver 사용 규약을 읽고 원격 PC의 `C:\GuiTest\SimpleMemo.exe`를 실행하라.<br>
+> “테스트 메모입니다”를 새 파일에 저장한 뒤 다시 열어 내용이 같은지 확인하라.<br>
+> 원격 화면을 작업 PC로 가져와 보관하고, 원격 PC에 이번에 만든 파일·앱과 제어 세션을 정리하라.
+
+전체 절차는 [GUI 테스트 가이드](docs/gui-test-guide.md)에서 확인할 수 있다.
+
+<details>
+<summary><strong>직접 CLI로 첫 요청 보내기</strong></summary>
+
+작업 PC의 Controller 폴더에서 연결된 원격 PC를 확인하고 조작 세션을 연다. `remote-pc`는 `--status`에 나온 실제 machineId로 바꾼다.
 
 ```powershell
-.\build.ps1 -Package -Configuration Debug
+.\Controller.exe --status
+.\Controller.exe --session-open --machine remote-pc --mode control
 ```
 
-배포 패키지는 .NET 런타임을 포함하지 않는다. 대상 PC에 .NET 10 Desktop Runtime x64를 설치한 뒤 실행한다. Release 빌드만 하고 배포 패키지를 만들지 않으려면 `.\build.ps1`을 실행한다. 개발용 Debug 빌드는 `.\build.ps1 -Configuration Debug`로도 수행할 수 있다.
+응답의 `controlSessionId`를 아래 `REPLACE_SESSION_ID`에 넣어 `windows.json`으로 저장한다.
 
-### 로컬 검증
+```json
+{
+  "apiVersion": 1,
+  "requestId": "windows-001",
+  "controlSessionId": "REPLACE_SESSION_ID",
+  "operation": "windows",
+  "arguments": {}
+}
+```
+
+원격 PC의 창 목록을 조회하고, 작업이 끝나면 같은 세션 번호로 연결을 닫는다.
 
 ```powershell
+.\Controller.exe --request .\windows.json
+.\Controller.exe --session-close REPLACE_SESSION_ID
+```
+
+클릭·문자 입력 등 다른 작업도 같은 형식의 JSON 요청으로 보낸다. 대상 창과 버튼 식별값은 조회 결과를 사용하며, 입력 전에는 `focus`로 창을 활성화한다. 전체 명령과 오류별 처리 방법은 [사용 규약](docs/agent-usage.md)을 참고한다.
+
+</details>
+
+## 저장소 구성
+
+| 디렉토리 | 내용 |
+|---|---|
+| `src/Controller/` | 작업 PC에서 요청을 받는 실행 프로그램 |
+| `src/Agent/` | 원격 Windows PC에서 GUI를 관측·조작하는 실행 프로그램 |
+| `src/Core/` | 통신, 화면 캡처, 입력, 세션과 복구 로직 |
+| `src/Contracts/` | 요청·응답 형식과 공통 데이터 타입 |
+| `fixtures/` | 메모·입력 확인용 예제 앱 |
+| `tests/` | 명령 계약, 통신, 세션과 프로세스 검사 |
+| `scripts/` | 실행 관리와 배포 패키지 검사 스크립트 |
+| `docs/` | 사용 규약과 GUI 테스트 가이드 |
+| `docs/assets/` | README의 그림과 애니메이션 |
+| `bin/` | 빌드·배포 결과. 자동 생성 |
+| `artifacts/` | 검사 결과와 진단 자료. 자동 생성 |
+
+<details>
+<summary><strong>소스 빌드와 검사</strong></summary>
+
+```powershell
+# Debug 빌드 → bin/Debug
+.\build.ps1 -Configuration Debug
+
+# Release 빌드·배포 패키지·로컬 검사
 .\verify.ps1
 ```
 
-Release 패키지를 만든 뒤 요청 계약·통신·세션·프로세스와 별도 복사한 패키지를 검사한다. 결과는 `artifacts/verify-...`에 저장한다. 실제 키보드·마우스 입력은 시작하지 않는다. CI는 별도 요청으로만 다룬다.
+검사 결과는 `artifacts/verify-...`에 저장된다. 로컬 검사는 실제 키보드·마우스 입력 없이 명령·통신·세션과 배포 패키지를 확인한다.
 
-### 배포 후 최초 설정
+</details>
 
-[사용 규약의 최초 설정](docs/agent-usage.md#최초-설정과-상주-실행)대로 인증서를 교환하고 상주 프로그램을 시작한다. 같은 PC에서는 127.0.0.1을 사용한다. 원격 Agent에는 Controller PC의 주소를 지정하고 Controller의 수신 주소·방화벽을 환경에 맞게 준비한다. 일반 사용자가 로그인한 콘솔 바탕화면만 지원하며 관리자 창·잠금·RDP의 지원을 추정하지 않는다.
+## 라이선스
+
+[MIT License](LICENSE)

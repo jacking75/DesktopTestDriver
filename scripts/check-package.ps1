@@ -19,8 +19,10 @@ foreach($role in @('Controller','Agent')) {
         if(Test-Path -LiteralPath (Join-Path $repository $relative)){
             if((Get-FileHash -LiteralPath $document.FullName).Hash -ne (Get-FileHash -LiteralPath (Join-Path $repository $relative)).Hash){throw "Source document mismatch: $relative"}
         }
-        foreach($match in [regex]::Matches($text,'\[[^\]]*\]\(([^)]+)\)')){
-            $link=$match.Groups[1].Value.Trim('<','>')
+        $links=@([regex]::Matches($text,'\[[^\]]*\]\(([^)]+)\)') | ForEach-Object {$_.Groups[1].Value})
+        $links+=@([regex]::Matches($text,'\b(?:src|srcset|href)="([^"]+)"') | ForEach-Object {$_.Groups[1].Value})
+        foreach($reference in $links){
+            $link=$reference.Trim('<','>')
             if($link -match '^[a-zA-Z]+://' -or $link.StartsWith('#')){continue}
             $link=[Uri]::UnescapeDataString(($link -split '#')[0])
             $resolved=[IO.Path]::GetFullPath((Join-Path $document.DirectoryName $link))

@@ -10,6 +10,7 @@ try {
   $target=Join-Path $PSScriptRoot ('bin/live_'+$Configuration)
   New-Item -ItemType Directory -Path $target -Force | Out-Null
   $documents=@('README.md','docs/agent-usage.md','docs/gui-test-guide.md')
+  $assets=@('docs/assets/remote-gui-hero.png','docs/assets/architecture.svg','docs/assets/control-loop.gif','docs/assets/control-loop.png')
   foreach($role in @('Controller','Agent')){
    $destination=Join-Path $target $role
    dotnet publish "src/$role/$role.csproj" -c $Configuration -r win-x64 --no-restore --self-contained false -o $destination --nologo
@@ -19,7 +20,14 @@ try {
     $relative=$oldDocument.FullName.Substring($destination.Length+1).Replace('\','/')
     if($relative -notin $documents){Remove-Item -LiteralPath $oldDocument.FullName}
    }
-   foreach($document in $documents){$to=Join-Path $destination $document;New-Item -ItemType Directory -Path (Split-Path -Parent $to) -Force | Out-Null;Copy-Item -LiteralPath (Join-Path $PSScriptRoot $document) -Destination $to}
+   $assetDirectory=Join-Path $destination 'docs/assets'
+   if(Test-Path -LiteralPath $assetDirectory){
+    foreach($oldAsset in Get-ChildItem -LiteralPath $assetDirectory -File){
+     $relative=$oldAsset.FullName.Substring($destination.Length+1).Replace('\','/')
+     if($relative -notin $assets){Remove-Item -LiteralPath $oldAsset.FullName}
+    }
+   }
+   foreach($document in ($documents+$assets)){$to=Join-Path $destination $document;New-Item -ItemType Directory -Path (Split-Path -Parent $to) -Force | Out-Null;Copy-Item -LiteralPath (Join-Path $PSScriptRoot $document) -Destination $to}
    New-Item -ItemType Directory -Path (Join-Path $destination 'scripts') -Force | Out-Null
    Copy-Item -LiteralPath scripts/manage.ps1 -Destination (Join-Path $destination 'scripts/manage.ps1')
    Copy-Item -LiteralPath LICENSE -Destination $destination
