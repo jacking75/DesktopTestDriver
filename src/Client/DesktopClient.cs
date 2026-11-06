@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace DesktopTestDriver;
 public sealed class DesktopClient(ControllerSettings settings)
 {
-    public Task<GuiResponse> OpenSessionAsync(string machine, DesktopProcess[] targets, string mode = "observe", string policy = "background-only", CancellationToken cancellation = default, string? applicationProfileId = null) => Open(machine, targets, mode, policy, applicationProfileId).WaitAsync(cancellation);
+    public Task<GuiResponse> OpenSessionAsync(string machine, DesktopProcess[] targets, string mode = "observe", string policy = "background-only", CancellationToken cancellation = default, string? applicationProfileId = null) => WaitForCall(() => Open(machine, targets, mode, policy, applicationProfileId), cancellation);
     public Task<GuiResponse> GetCapabilitiesAsync(string session, string window, CancellationToken cancellation = default) => Execute(session, "capabilities", new { windowId = window }, cancellation);
     public Task<GuiResponse> ReadElementAsync(string session,string window,string elementId,string snapshotToken,CancellationToken cancellation=default)=>Execute(session,"capabilities",new{windowId=window,elementId,snapshotToken},cancellation);
     public Task<GuiResponse> FindInElementAsync(string session,string window,string rootElementId,string rootSnapshotToken,ElementSelector selector,CancellationToken cancellation=default)=>Execute(session,"find-element",new{windowId=window,searchRootElementId=rootElementId,searchRootSnapshotToken=rootSnapshotToken,selector=JsonSerializer.SerializeToElement(selector,new JsonSerializerOptions(GuiProtocol.Json){DefaultIgnoreCondition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull})},cancellation);
@@ -11,8 +11,13 @@ public sealed class DesktopClient(ControllerSettings settings)
     public Task<GuiResponse> SetValueAsync(string session, string window, string element, string snapshotToken, string value, string requestId, CancellationToken cancellation = default) => Execute(session, "set-value", new { windowId = window, elementId = element, snapshotToken, value }, cancellation, requestId);
     public Task<GuiResponse> InvokeAsync(string session, string window, string element, string snapshotToken, string requestId, CancellationToken cancellation = default) => Execute(session, "invoke", new { windowId = window, elementId = element, snapshotToken }, cancellation, requestId);
     public Task<GuiResponse> WaitAsync(string session, string window, ElementSelector selector, string condition, string? expected, int timeoutMilliseconds = 5000, CancellationToken cancellation = default) => Execute(session, "wait-condition", new { windowId = window, selector = System.Text.Json.JsonSerializer.SerializeToElement(selector, new JsonSerializerOptions(GuiProtocol.Json) { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull }), condition, expected }, cancellation, timeoutMilliseconds: timeoutMilliseconds);
-    public Task<GuiResponse> GetRequestResultAsync(string session, string requestId, CancellationToken cancellation = default) => Result(session, requestId).WaitAsync(cancellation);
-    public Task<GuiResponse> CloseSessionAsync(string session, CancellationToken cancellation = default) => Close(session).WaitAsync(cancellation);
+    public Task<GuiResponse> GetRequestResultAsync(string session, string requestId, CancellationToken cancellation = default) => WaitForCall(() => Result(session, requestId), cancellation);
+    public Task<GuiResponse> CloseSessionAsync(string session, CancellationToken cancellation = default) => WaitForCall(() => Close(session), cancellation);
+    private static Task<GuiResponse> WaitForCall(Func<Task<GuiResponse>> call, CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        return call().WaitAsync(cancellation);
+    }
     public Task<GuiResponse> Open(string machine, DesktopProcess[] targets, string mode = "observe", string policy = "background-only", string? applicationProfileId = null) =>
         ControllerHost.Call(settings, new("session-open", MachineId: machine, Mode: mode, ApiVersion: 2, InteractionPolicy: policy, TargetScope: targets, ApplicationProfileId: applicationProfileId));
     public async Task<GuiResponse> Execute(string session, string operation, object arguments, CancellationToken cancellation = default, string? requestId = null, int timeoutMilliseconds = 5000)

@@ -299,9 +299,29 @@ public sealed class ControllerHost
     }
     public static async Task<GuiResponse> Call(ControllerSettings settings, LocalCommand command)
     {
+        GuiRequest? request = null;
+        if (command.Command == "request" && command.Request != null)
+        {
+            try { request = GuiProtocol.Parse(command.Request); }
+            catch { /* Invalid requests are rejected by the controller. */ }
+        }
         using var pipe = new NamedPipeClientStream(".", settings.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         using var deadline = new CancellationTokenSource(10000);
-        try { await pipe.ConnectAsync(1000, deadline.Token); await GuiWire.Write(pipe, command, deadline.Token); return await GuiWire.Read<GuiResponse>(pipe, deadline.Token); }
-        catch { return GuiResponse.Reject("ControllerUnavailable"); }
+        bool dispatchStarted = false;
+        try
+        {
+            await pipe.ConnectAsync(1000, deadline.Token);
+            dispatchStarted = true;
+            await GuiWire.Write(pipe, command, deadline.Token);
+            return await GuiWire.Read<GuiResponse>(pipe, deadline.Token);
+        }
+        catch
+        {
+            if (dispatchStarted && request != null)
+                return new("completionUnknown", request.RequestId, request.ControlSessionId,
+                    Data: new { effectState = GuiProtocol.ReadOnly(request.Operation) ? "none" : "unknown", inputCountKnown = false },
+                    Error: new("ControllerResponseUnavailable", "ControllerResponseUnavailable")) { ApiVersion = request.ApiVersion, Operation = request.Operation };
+            return GuiResponse.Reject("ControllerUnavailable");
+        }
     }
 }

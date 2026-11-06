@@ -46,6 +46,51 @@ await Test("G01 strict contract and canonical duplicate identity", () =>
     Check(GuiProtocol.Fingerprint(GuiProtocol.Parse(sample)) == GuiProtocol.Fingerprint(GuiProtocol.Parse("""{"arguments":{},"operation":"windows","controlSessionId":"session","requestId":"one","timeoutMilliseconds":5000,"apiVersion":1}""")));
     Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":1,\"apiVersion\":1")); Reject(sample.Replace("windows", "scenario")); Reject(sample.Replace("{}", "{\"extra\":1}")); Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":3")); Reject(sample.Replace("{}", "null")); return Task.CompletedTask;
 });
+await Test("응답 유실 시 요청 식별자와 불확실한 결과를 보존한다", async () =>
+{
+    foreach (var operation in new[] { "windows", "invoke" })
+    {
+        var settings = new ControllerSettings(Root());
+        using var server = new System.IO.Pipes.NamedPipeServerStream(settings.PipeName, System.IO.Pipes.PipeDirection.InOut, 1,
+            System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous | System.IO.Pipes.PipeOptions.CurrentUserOnly);
+        using var timeout = new CancellationTokenSource(5000);
+        var accepted = Task.Run(async () =>
+        {
+            await server.WaitForConnectionAsync(timeout.Token);
+            _ = await GuiWire.Read<LocalCommand>(server, timeout.Token);
+            server.Disconnect();
+        });
+        object arguments = operation == "windows" ? new { } : new { windowId = "window", elementId = "element", snapshotToken = "snapshot" };
+        var request = new GuiRequest(2, "lost-response", "session", operation, 5000, JsonSerializer.SerializeToElement(arguments));
+        var result = await ControllerHost.Call(settings, new("request", Request: GuiProtocol.Encode(request)));
+        await accepted;
+        Check(result.Status == "completionUnknown", GuiProtocol.Encode(result));
+        Check(result.RequestId == request.RequestId && result.ControlSessionId == request.ControlSessionId && result.Operation == operation);
+        Check(result.Error?.Code == "ControllerResponseUnavailable");
+    }
+});
+await Test("미리 취소한 클라이언트 요청은 연결을 시작하지 않는다", async () =>
+{
+    var settings = new ControllerSettings(Root());
+    using var server = new System.IO.Pipes.NamedPipeServerStream(settings.PipeName, System.IO.Pipes.PipeDirection.InOut, 1,
+        System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous | System.IO.Pipes.PipeOptions.CurrentUserOnly);
+    using var probe = new CancellationTokenSource();
+    var connection = server.WaitForConnectionAsync(probe.Token);
+    var client = new DesktopClient(settings);
+    using var canceled = new CancellationTokenSource(); canceled.Cancel();
+    foreach (var call in new Func<Task<GuiResponse>>[] {
+        () => client.OpenSessionAsync("machine", [], cancellation: canceled.Token),
+        () => client.CloseSessionAsync("session", canceled.Token),
+        () => client.GetRequestResultAsync("session", "request", canceled.Token) })
+    {
+        try { await call(); throw new Exception("취소한 요청이 실행됐다"); }
+        catch (OperationCanceledException) { }
+    }
+    await Task.Delay(100);
+    Check(!connection.IsCompleted, "취소한 요청이 Controller에 연결했다");
+    probe.Cancel();
+    try { await connection; } catch (OperationCanceledException) { }
+});
 await Test("G01 function-key aliases cannot cause partial chord injection", () =>
 {
     foreach (var alias in new[] { "F01", "F+1", "F 1" })

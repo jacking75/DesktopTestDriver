@@ -17,6 +17,18 @@ static class AutomationTests
         Reject(() => ElementQuery.Find(observation with { ProviderErrors = ["provider"] }, new(Name: "없음"), true), "SearchIncomplete");
         Check(ElementQuery.Find(observation, new(Name: "없음"), true) == null);
         passed++; Console.WriteLine("PASS S06 parent selector, duplicate, disabled and incomplete absence");
+        var wide = observation with { Nodes = new[] { Node("root", null, "root") with { AutomationId = "root-id" } }
+            .Concat(Enumerable.Range(0, 4000).Select(i => Node("child-" + i, "root", "child"))).ToArray() };
+        var parentSelector = new ElementSelector(Parent: new(Name: "missing"));
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        var reference = wide.Nodes.Where(n => ElementQuery.Matches(n, parentSelector, wide)).ToArray();
+        var referenceMs = timer.Elapsed.TotalMilliseconds;
+        timer.Restart();
+        Check(ElementQuery.Find(wide, parentSelector, true) == null && reference.Length == 0);
+        var indexedMs = timer.Elapsed.TotalMilliseconds;
+        Reject(() => ElementQuery.Find(wide, new(AncestorAutomationId: "root-id")), "AmbiguousTarget");
+        Check(ElementQuery.Find(wide, new(Name: "root"))?.ElementId == "root");
+        passed++; Console.WriteLine($"PASS 부모 탐색 4001개 노드: 순차 참조={referenceMs:F2}ms, 인덱스={indexedMs:F2}ms; 중복 판정 보존");
         var valid = Request("session", "set-value", new { windowId = "window", elementId = "element", snapshotToken = "snapshot", value = "한글\n" }); Check(valid.ApiVersion == 2);
         Reject(() => Request("session", "set-toggle", new { windowId = "window", elementId = "element", snapshotToken = "snapshot", desiredState = "maybe" }), "InvalidToggleState");
         Reject(() => Request("session", "find-element", new { windowId = "window", selector = new { } }), "InvalidSelector");

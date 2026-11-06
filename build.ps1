@@ -11,6 +11,7 @@ try {
   New-Item -ItemType Directory -Path $target -Force | Out-Null
   $documents=@('README.md','README_kr.md','docs/agent-usage.md','docs/gui-test-guide.md')
   $assets=@(
+   'docs/assets/e2e-benefits-infographic.png','docs/assets/e2e-benefits-infographic-en.png',
    'docs/assets/remote-gui-hero.png','docs/assets/architecture.svg','docs/assets/control-loop.gif','docs/assets/control-loop.png',
    'docs/assets/remote-gui-hero-en.png','docs/assets/architecture-en.svg','docs/assets/control-loop-en.gif','docs/assets/control-loop-en.png'
   )
