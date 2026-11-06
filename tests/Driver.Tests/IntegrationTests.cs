@@ -104,6 +104,24 @@ static class IntegrationTests
             var cliStatus = await Cli("--status"); using (var json = JsonDocument.Parse(cliStatus.Output)) Check(cliStatus.Code == 0 && json.RootElement.GetProperty("status").GetString() == "completed", "CLI stdout invalid");
             var wrong = await Cli("--status", "--unsupported"); using (var json = JsonDocument.Parse(wrong.Output)) Check(wrong.Code == 1 && json.RootElement.GetProperty("status").GetString() == "rejected", "CLI invalid options");
             passed++; Console.WriteLine("PASS G05 actual CLI processes emit one JSON and enforce arguments");
+            var streamStart=new ProcessStartInfo(exe){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardInputEncoding=new System.Text.UTF8Encoding(false),StandardOutputEncoding=new System.Text.UTF8Encoding(false)};
+            foreach(var argument in new[]{"--config",config,"--json-lines"})streamStart.ArgumentList.Add(argument);
+            using(var stream=Process.Start(streamStart)!)
+            {
+                var stderr=stream.StandardError.ReadToEndAsync();
+                try
+                {
+                    for(var index=0;index<20;index++)
+                    {
+                        await stream.StandardInput.WriteLineAsync(index==8?"{invalid}":GuiProtocol.Encode(new LocalCommand("status")));await stream.StandardInput.FlushAsync();
+                        var line=await stream.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));var result=GuiProtocol.Decode<GuiResponse>(line!);
+                        Check(result.Status==(index==8?"rejected":"completed"),"persistent CLI response order or error recovery failed");
+                    }
+                    stream.StandardInput.Close();await stream.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3));Check(stream.ExitCode==0,"persistent CLI EOF failed");
+                }
+                finally{if(!stream.HasExited){stream.Kill();await stream.WaitForExitAsync();}await stderr;}
+            }
+            passed++;Console.WriteLine("PASS G05 one persistent CLI handles 20 ordered responses, malformed input and EOF cleanup");
             // Kill only the short CLI after acceptance; the host must retain the result.
             desktopA.Entered.Reset(); desktopA.DelayControls = 600;
             var requestId = "lost-cli"; var file = Path.Combine(root, "request.json");

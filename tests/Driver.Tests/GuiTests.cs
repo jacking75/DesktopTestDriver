@@ -22,8 +22,10 @@ if(args is ["--environment"])
     Console.WriteLine(GuiProtocol.Encode(new{session=current.SessionId,kind=WindowsDesktop.SessionKind(current.SessionId),valid=environment.Valid}));return 0;
 }
 if(args is ["--automation-flow-tests"]) { await AutomationFlowTests.Run(); return 0; }
+if(args is ["--semantic-profile-probe",var probeConfiguration])return await SemanticProfileProbe.Run(probeConfiguration);
 if (args is ["--physical-input"]) return await PhysicalTests.Run();
 if(args is ["--concurrent-ui"]) return await DesktopAcceptanceTests.Run(true);
+if(args is ["--concurrent-ui","--wait-for-human"]) return await DesktopAcceptanceTests.Run(true,true);
 if(args is ["--compare-input"]) return await DesktopAcceptanceTests.Run(false);
 if(args is ["--window-tests"]) return await WindowUiTests.Run();
 if(args is ["--virtual-tests"]) return await VirtualUiTests.Run();

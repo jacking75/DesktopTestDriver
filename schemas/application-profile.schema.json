@@ -171,6 +171,23 @@
         "null"
       ],
       "default": null
+    },
+    "redactedAutomationIds": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "default": null
+    },
+    "captureAllowed": {
+      "type": "boolean",
+      "default": false
     }
   },
   "required": [

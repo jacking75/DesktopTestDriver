@@ -8,9 +8,15 @@ public sealed record ElementSelector(string? AutomationId = null, string? Contro
     string? AncestorAutomationId = null, ElementSelector? Parent = null);
 public sealed record ObservationNode(string ElementId, string? ParentId, string AutomationId, string Name,
     string ControlType, string ClassName, string FrameworkId, bool Enabled, bool Offscreen,
-    ElementValue Value, string[] Patterns, string SnapshotToken, string? ToggleState = null);
+    ElementValue Value, string[] Patterns, string SnapshotToken, string? ToggleState = null)
+{
+    public string DetailState {get;init;}="complete";
+}
 public sealed record Observation(string Root, ObservationNode[] Nodes, DateTimeOffset QueriedAt,
-    string TreeView, bool Complete, string? TruncationReason, string[] ProviderErrors, string VirtualizationState);
+    string TreeView, bool Complete, string? TruncationReason, string[] ProviderErrors, string VirtualizationState)
+{
+    public bool QueryComplete {get;init;}
+}
 public sealed record ApplicationBindings(string ExecutableBinding, string WorkingDirectoryBinding, string FingerprintBinding);
 public sealed record ProfileAction(string Target, string Operation);
 public sealed record ApplicationProfile(int ProfileVersion, string ProfileId, string Backend,
@@ -21,8 +27,18 @@ public sealed record DiagnosticItem(string Name, string State, string Reason, st
 public sealed record UiaCommand(DesktopWindow Window, string Operation, ElementSelector? Selector = null,
     string? RuntimeId = null, string? SnapshotToken = null, string? Value = null,
     string? DesiredState = null, bool? Expanded = null, double? Horizontal = null, double? Vertical = null,
-    string TreeView = "control", string ScopeSession = "default", string? ItemName = null);
-public sealed record UiaResult(Observation Observation, ObservationNode? Target = null, string EffectState = "none");
+    string TreeView = "control", string ScopeSession = "default", string? ItemName = null)
+{
+    public bool RootOnly {get;init;}
+    public string? SearchRootRuntimeId {get;init;}
+    public string? SearchRootSnapshotToken {get;init;}
+    public string? IntendedOperation {get;init;}
+}
+public sealed record UiaResult(Observation Observation, ObservationNode? Target = null, string EffectState = "none")
+{
+    public string LookupKind {get;init;}="full-tree";
+    public string? DispatchKind {get;init;}
+}
 
 public static class AutomationOperations
 {

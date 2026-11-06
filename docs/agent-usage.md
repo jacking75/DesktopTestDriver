@@ -181,6 +181,16 @@ inputReleased는 해당 세션의 도구 소유 입력에 관한 값이다. true
 
 ## 창과 요소를 선택하는 방법
 
+API 2의 반복 작업은 **처음 찾은 요소 참조를 재사용**한다. `find-element`를 매번 호출하면 새 탐색이다. `elementId`와 `snapshotToken`을 보관하고 `capabilities`에 `windowId`, `elementId`, `snapshotToken`을 보내면 보관한 대상의 현재 값·활성 상태·패턴을 읽는다. C#에서는 `ReadElementAsync`를 사용한다. 같은 참조로 `SetValueAsync`, `InvokeAsync`도 호출할 수 있다. 현재 값은 캐시하지 않는다.
+
+창의 식별만 필요하면 `inspect`에 `rootOnly:true`를 지정한다. 처음에 목록·패널을 찾은 뒤, `find-element` 또는 `wait-condition`에 `searchRootElementId`, `searchRootSnapshotToken`을 지정하면 해당 영역만 탐색한다. C#의 `FindInElementAsync`도 같은 계약이다. 동적 목록의 새 메시지는 이 범위에서 찾는다. 입력란·상태란·고정 버튼을 찾기 위해 동적 목록 전체를 다시 탐색하지 않는다.
+
+참조를 사용할 때마다 프로세스·창·RuntimeId·부모 관계와 선택자 조건을 다시 검증한다. 이름을 선택자에 지정하지 않았다면 창 제목·알림 표시 변경만으로 참조를 폐기하지 않는다. 창 재생성·요소 교체·선택자 불일치는 `StaleElement`로 거부하며, 필요한 영역을 다시 조회한다. `completionUnknown` 변경 동작을 자동 재전송하지 않는다.
+
+부분 경로 응답의 `observation.complete:false`는 창 전체를 반환하지 않았다는 뜻이다. 해당 조회가 끝났는지는 `queryComplete`로 구분한다. 각 노드의 `detailState`가 `metadata-only`이면 값·패턴은 읽지 않은 상태이다. `lookupKind`는 `root-only`, `selector-path`, `scoped-selector`, `bound-reference`, `full-tree` 등 실제 수행 경로를 표시한다. 가상 목록의 미열거 항목을 없다고 판단하지 않는다.
+
+언어 중립 클라이언트는 `Controller.exe --config FILE --json-lines` 프로세스 하나를 유지할 수 있다. 표준 입력 한 줄에 `LocalCommand` JSON 하나를 보내면 표준 출력 한 줄에 응답 하나를 받는다. `{"command":"status"}`와 `{"command":"session-close","sessionId":"실제 세션 ID"}`를 순차 전송한다. 요청은 `{"command":"request","request":"직렬화한 GUI 요청 JSON 문자열"}`이다. stdin EOF로 프로세스를 종료하며 GUI 세션은 명시적으로 닫는다. 요청 ID·저널·권한 검사는 기존 Controller/Agent와 같다.
+
 1. windows로 창을 조회한다. data.windows의 실제 windowId·제목·PID·실행 경로·영역을 읽는다. 인덱스 0이나 추측 HWND로 선택하지 않는다.
 2. 선택한 windowId로 controls를 요청한다. data.elements에서 실제 elementId·AutomationId·이름·종류·활성 상태를 읽는다.
 3. 요소 조작은 elementId를 우선 사용한다. AutomationId를 쓰면 그 창에서 활성 대상 하나만 일치해야 한다. 여러 요소가 맞으면 AmbiguousTarget으로 거부한다.

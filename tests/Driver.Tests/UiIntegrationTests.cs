@@ -54,6 +54,18 @@ static class UiIntegrationTests
                 async Task<JsonElement> Find(object selector) => Data(await Request("find-element", new { windowId = window, selector })).GetProperty("target");
                 Stage("inspect");
                 var editor = await Find(new { automationId = fixture == "FormsWorkbench" ? "Editor" : "MemoText" });
+                var samples=new List<long>();
+                for(var sample=0;sample<30;sample++)
+                {
+                    var clock=Stopwatch.StartNew();var cached=Data(await Request("capabilities",new{windowId=window,elementId=editor.GetProperty("elementId").GetString(),snapshotToken=editor.GetProperty("snapshotToken").GetString()}));samples.Add(clock.ElapsedMilliseconds);
+                    if(cached.GetProperty("lookupKind").GetString()!="bound-reference"||cached.GetProperty("target").GetProperty("automationId").GetString()!=editor.GetProperty("automationId").GetString())throw new Exception("반복 조회가 보관한 대상 참조를 사용하지 않았다.");
+                }
+                File.WriteAllText(Path.Combine(root,fixture+"-reuse.json"),GuiProtocol.Encode(new{samples,meanMilliseconds=samples.Average(),maxMilliseconds=samples.Max(),repeatedTreeSearches=0}));
+                var rootNode=tree.GetProperty("nodes")[0];
+                var scopedSelector=new Dictionary<string,string?>{["controlType"]=editor.GetProperty("controlType").GetString(),["className"]=editor.GetProperty("className").GetString()};
+                if(!string.IsNullOrEmpty(editor.GetProperty("name").GetString()))scopedSelector["name"]=editor.GetProperty("name").GetString();
+                var scoped=Data(await Request("find-element",new{windowId=window,searchRootElementId=rootNode.GetProperty("elementId").GetString(),searchRootSnapshotToken=rootNode.GetProperty("snapshotToken").GetString(),selector=scopedSelector}));
+                if(!scoped.GetProperty("observation").GetProperty("queryComplete").GetBoolean())throw new Exception("범위 내 검색 완전성을 확인하지 못했다.");
                 var mutation = new { windowId = window, elementId = editor.GetProperty("elementId").GetString(), snapshotToken = editor.GetProperty("snapshotToken").GetString(), value = "한글\n독립 검증" };
                 await Request("set-value", mutation, "set-editor"); await Request("set-value", mutation, "set-editor");
                 Stage("set-value");

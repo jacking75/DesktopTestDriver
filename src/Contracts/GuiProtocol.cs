@@ -128,11 +128,11 @@ public static class GuiProtocol
         Fields(a, operation switch
         {
             "find-window" or "wait-window" => "title className ownerWindowId pollMilliseconds",
-            "inspect" => "windowId treeView",
-            "capabilities" => "windowId selector",
-            "find-element" => "windowId selector",
+            "inspect" => "windowId treeView rootOnly",
+            "capabilities" => "windowId selector elementId snapshotToken",
+            "find-element" => "windowId selector searchRootElementId searchRootSnapshotToken",
             "find-item" => "windowId elementId snapshotToken itemName",
-            "wait-condition" => "windowId selector condition expected pollMilliseconds",
+            "wait-condition" => "windowId selector condition expected pollMilliseconds searchRootElementId searchRootSnapshotToken",
             "set-value" => "windowId elementId snapshotToken value expectedValueHash",
             "set-toggle" => "windowId elementId snapshotToken desiredState",
             "set-expanded" => "windowId elementId snapshotToken expanded",
@@ -147,8 +147,12 @@ public static class GuiProtocol
             return;
         }
         _ = Text(a, "windowId");
+        if(a.TryGetProperty("rootOnly",out var rootOnly)) _=rootOnly.GetBoolean();
         if (a.TryGetProperty("treeView", out var view) && view.GetString() is not ("control" or "raw" or "content")) throw new GuiException("InvalidTreeView");
         if (a.TryGetProperty("selector", out var selector)) ValidateSelector(selector, 0);
+        if(a.TryGetProperty("searchRootElementId",out _)){_=Text(a,"searchRootElementId");_=Text(a,"searchRootSnapshotToken");}else if(a.TryGetProperty("searchRootSnapshotToken",out _))throw new GuiException("InvalidSelector");
+        if(operation=="capabilities"&&a.TryGetProperty("elementId",out _)){_=Text(a,"elementId");_=Text(a,"snapshotToken");if(a.TryGetProperty("selector",out _))throw new GuiException("AmbiguousTarget");}
+        else if(operation=="capabilities"&&a.TryGetProperty("snapshotToken",out _))throw new GuiException("InvalidSelector");
         if (operation is "find-element" or "wait-condition" && !a.TryGetProperty("selector", out _)) throw new GuiException("InvalidSelector");
         if (operation == "find-item") _ = Text(a, "itemName");
         if (!AutomationOperations.ReadOnly(operation) || operation == "find-item") { _ = Text(a, "elementId"); _ = Text(a, "snapshotToken"); }

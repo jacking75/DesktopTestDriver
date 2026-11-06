@@ -35,20 +35,20 @@ public sealed class QuietProvider(Control owner) : IRawElementProviderSimple, IV
     public ProviderOptions ProviderOptions => ProviderOptions.ServerSideProvider | ProviderOptions.UseComThreading | ProviderOptions.ProviderOwnsSetFocus;
     public IRawElementProviderSimple HostRawElementProvider => AutomationInteropProvider.HostProviderFromHandle(owner.Handle);
     public object? GetPatternProvider(int id) => id == ValuePatternIdentifiers.Pattern.Id && owner is TextBox || id == InvokePatternIdentifiers.Pattern.Id && owner is Button ? this : null;
-    public object? GetPropertyValue(int id) => Read<object?>(() => id switch
+    public object? GetPropertyValue(int id) => id switch
     {
         30003 => owner is TextBox ? ControlType.Edit.Id : ControlType.Button.Id,
-        30005 => owner.AccessibleName ?? owner.Text,
-        30009 => owner.CanFocus,
-        30010 => owner.Enabled,
-        30011 => owner.Name,
+        30005 => Read(() => owner.AccessibleName ?? owner.Text),
+        30009 => Read(() => owner.CanFocus),
+        30010 => Read(() => owner.Enabled),
+        30011 => Read(() => owner.Name),
         30012 => owner.GetType().Name,
         30013 => "fixture",
-        30019 => owner is TextBox t && t.UseSystemPasswordChar,
-        30022 => !owner.Visible,
+        30019 => Read(() => owner is TextBox t && t.UseSystemPasswordChar),
+        30022 => Read(() => !owner.Visible),
         30024 => "WinForm",
         _ => null
-    });
+    };
     public bool IsReadOnly => Read(() => owner is not TextBox t || t.ReadOnly);
     public string Value => Read(() => owner.Text);
     public void SetValue(string value) => Write(() => { if (!owner.Enabled || IsReadOnly) throw new InvalidOperationException(); owner.Text = value; });

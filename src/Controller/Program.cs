@@ -7,7 +7,7 @@ try
     var list = args.ToList(); var config = Path.Combine(AppContext.BaseDirectory, "Controller.json");
     if (list.Count >= 2 && list[0] == "--config") { config = Path.GetFullPath(list[1]); list.RemoveRange(0, 2); }
     var a = list.ToArray();
-    if (a is ["--help"]) { Console.WriteLine($"DesktopTestDriver 0.3 / GUI API 1/2\n--request-stdin | --doctor --machine TARGET | --inspect --session ID --window ID\n--profile-validate FILE\n--session-pause ID | --session-resume ID --expected-revision N\n--status [--machine TARGET]\n--session-open --machine TARGET [--mode control|observe] [--idle-seconds 900]\n--session-status [CONTROL_ID]\n--request FILE\n--request-status CONTROL_ID REQUEST_ID\n--session-close CONTROL_ID\n--config FILE (first option)\nSetup: --initialize STATE ADDRESS PORT | --register MACHINE CERTIFICATE.cer\nHost: --serve | --shutdown\nUsage: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}\nSetup: {Path.Combine(AppContext.BaseDirectory, "scripts", "manage.ps1")}"); return 0; }
+    if (a is ["--help"]) { Console.WriteLine($"DesktopTestDriver 0.3 / GUI API 1/2\n--request-stdin | --json-lines | --doctor --machine TARGET | --inspect --session ID --window ID\n--profile-validate FILE\n--session-pause ID | --session-resume ID --expected-revision N\n--status [--machine TARGET]\n--session-open --machine TARGET [--mode control|observe] [--idle-seconds 900]\n--session-status [CONTROL_ID]\n--request FILE\n--request-status CONTROL_ID REQUEST_ID\n--session-close CONTROL_ID\n--config FILE (first option)\nSetup: --initialize STATE ADDRESS PORT | --register MACHINE CERTIFICATE.cer\nHost: --serve | --shutdown\nUsage: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}\nSetup: {Path.Combine(AppContext.BaseDirectory, "scripts", "manage.ps1")}"); return 0; }
     if (a is ["--initialize", var state, var address, var port])
     {
         if (File.Exists(config)) throw new GuiException("ConfigurationExists"); var settings = new ControllerSettings(Path.GetFullPath(state), address, int.Parse(port)); ConnectionSettings.Validate(settings); var store = new StateStore(settings.StateDirectory); ConnectionSettings.Initialize(store, "Controller");
@@ -26,6 +26,28 @@ try
         Console.WriteLine(GuiProtocol.Encode(validationReply)); return validationReply.ExitCode;
     }
     var c = ConnectionSettings.Controller(config);
+    if(a is ["--json-lines"])
+    {
+        // 한 프로세스에서 여러 공개 명령을 처리한다. 각 줄은 LocalCommand 한 개이고
+        // 응답도 한 줄이다. 요청 ID·저널·Agent 권한 검사는 기존 호스트가 수행한다.
+        while(true)
+        {
+            var line=new StringBuilder();var ended=false;
+            while(true){var ch=Console.In.Read();if(ch<0){ended=true;break;}if(ch=='\n')break;if(ch!='\r')line.Append((char)ch);if(line.Length>GuiProtocol.MaxRequestBytes*8+16384)throw new GuiException("RequestTooLarge");}
+            if(ended&&line.Length==0)break;
+            GuiResponse response;
+            try
+            {
+                var streamed=GuiProtocol.Decode<LocalCommand>(line.ToString());
+                if(streamed.Command is not("request" or "session-open" or "session-status" or "session-close" or "request-status" or "status" or "session-pause" or "session-resume" or "session-reconcile"))throw new GuiException("InvalidCommand");
+                if(streamed.Command=="request")GuiProtocol.Parse(streamed.Request??throw new GuiException("InvalidRequest"));
+                response=await ControllerHost.Call(c,streamed);
+            }
+            catch(Exception error){response=GuiResponse.Reject(error is GuiException problem?problem.Code:"InvalidRequest");}
+            Console.WriteLine(GuiProtocol.Encode(response));Console.Out.Flush();if(ended)break;
+        }
+        return 0;
+    }
     if (a is ["--register", var machine, var cert]) { ConnectionSettings.Register(new(c.StateDirectory), machine, cert); Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed"))); return 0; }
     if (a is ["--serve"] || a.Length == 0) { using var stop = new CancellationTokenSource(); Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); }; await new ControllerHost(c).Run(stop.Token); return 0; }
     LocalCommand command;

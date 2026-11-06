@@ -41,14 +41,17 @@ public sealed class UiaWorker : IDisposable
         lock (gate)
         {
             if (disposed || helper.HasExited) throw new GuiException("ProviderUnavailable");
+            GuiResponse response;
             try
             {
                 GuiWire.Write(pipe, command, cancellation).GetAwaiter().GetResult();
-                var response = GuiWire.Read<GuiResponse>(pipe, cancellation).GetAwaiter().GetResult();
-                if (response.Status != "completed") throw new GuiException(response.Error?.Code ?? "ProviderUnavailable");
-                return GuiProtocol.Decode<UiaResult>(GuiProtocol.Encode(response.Data));
+                response = GuiWire.Read<GuiResponse>(pipe, cancellation).GetAwaiter().GetResult();
             }
             catch { Dispose(); throw; }
+            // 정상적으로 반환한 거부는 작업자 고장이 아니다. 캐시와 다른 유효 참조를
+            // 지우지 않는다. 통신 실패·취소·hang 때만 위에서 작업자를 종료한다.
+            if (response.Status != "completed") throw new GuiException(response.Error?.Code ?? "ProviderUnavailable",response.Error?.Message);
+            return GuiProtocol.Decode<UiaResult>(GuiProtocol.Encode(response.Data));
         }
     }
     public void Dispose()
@@ -80,13 +83,14 @@ public sealed class UiaWorker : IDisposable
                     var command = GuiWire.Read<UiaCommand>(pipe, CancellationToken.None).GetAwaiter().GetResult();
                     GuiResponse response;
                     try { response = new("completed", Data: UiaAutomation.Execute(command)); }
-                    catch (Exception e) { response = GuiResponse.Reject(e is GuiException g ? g.Code : "ProviderUnavailable"); }
+                    catch (Exception e) { response = e is GuiException g?new("rejected",Error:new(g.Code,g.Message)):GuiResponse.Reject("ProviderUnavailable"); }
                     GuiWire.Write(pipe, response, CancellationToken.None).GetAwaiter().GetResult();
                 }
                 exitCode = 0;
             }
             catch (EndOfStreamException) { exitCode = 0; }
             catch { exitCode = 1; }
+            finally{UiaAutomation.DisposeWorker();}
         }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.MTA); thread.Start(); thread.Join(); return exitCode;
     }

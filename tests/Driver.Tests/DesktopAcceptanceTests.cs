@@ -6,7 +6,7 @@ using System.Text.Json;
 
 static class DesktopAcceptanceTests
 {
-    public static async Task<int> Run(bool concurrent)
+    public static async Task<int> Run(bool concurrent,bool waitForHuman=false)
     {
         var output=Path.GetFullPath(Path.Combine("artifacts",(concurrent?"concurrent-":"comparison-")+Guid.NewGuid().ToString("N")));Directory.CreateDirectory(output);
         using(var port=new TcpListener(IPAddress.Loopback,32550)){port.Start();port.Stop();}
@@ -18,7 +18,7 @@ static class DesktopAcceptanceTests
         using var desktop=new WindowsDesktop(current.SessionId,Environment.ProcessPath!,agentStore.Root);
         using var stopController=new CancellationTokenSource();using var stopAgent=new CancellationTokenSource();
         Task? host=null,agent=null;string? session=null;string verdict="FAIL";string? error=null;bool closed=false,inputReleased=false,ended=false;var receipts=new List<JsonElement>();
-        object? result=null;ForegroundProbe? foreground=null;
+        object? result=null,failureDiagnostics=null;ForegroundProbe? foreground=null;long externalAtStart=0,hardwareAtStart=0;
         async Task<GuiResponse> Call(LocalCommand command)=>await ControllerHost.Call(controller,command);
         JsonElement Data(GuiResponse value)=>JsonSerializer.SerializeToElement(value.Data,GuiProtocol.Json);
         async Task<JsonElement> Request(string operation,object arguments)
@@ -31,7 +31,7 @@ static class DesktopAcceptanceTests
         try
         {
             if(!desktop.Valid)throw new GuiException("NoInteractiveSession");
-            for(int i=0;i<(concurrent?1:2);i++)
+            for(int i=0;i<1;i++)
             {
                 var start=new ProcessStartInfo(exe){UseShellExecute=false};if(concurrent)start.ArgumentList.Add("--quiet");var p=Process.Start(start)!;var job=new ApplicationJob("acceptance-"+Guid.NewGuid().ToString("N"),p);processes.Add((p,job,Processes.Identify(p)));
             }
@@ -66,6 +66,7 @@ static class DesktopAcceptanceTests
             var timer=Stopwatch.StartNew();while(timer.Elapsed.TotalSeconds<8){if((await Call(new("status",MachineId:"acceptance"))).Status=="completed")break;await Task.Delay(50);}
             if(!concurrent)await Task.Delay(2100);
             var opened=await Call(new("session-open",MachineId:"acceptance",ApiVersion:2,InteractionPolicy:concurrent?"background-only":"isolated-desktop",TargetScope:processes.Select(p=>p.Identity).ToArray(),ApplicationProfileId:"acceptance"));if(opened.Status!="completed")throw new Exception(GuiProtocol.Encode(opened));session=opened.ControlSessionId;
+            var admissionStatus=Data(await Call(new("status",MachineId:"acceptance")));externalAtStart=admissionStatus.GetProperty("externalInputEvents").GetInt64();hardwareAtStart=admissionStatus.GetProperty("hardwareInputEvents").GetInt64();
             var windows=(await Request("windows",new{})).GetProperty("windows");
             string Window(int index)=>windows.EnumerateArray().Single(w=>w.GetProperty("pid").GetInt32()==processes[index].Identity.Pid).GetProperty("windowId").GetString()!;
             async Task Semantic(string window,string value)
@@ -77,26 +78,41 @@ static class DesktopAcceptanceTests
             if(concurrent)
             {
                 foreground=new ForegroundProbe(processes[0].Identity.Pid);
-                var before=Data(await Call(new("status",MachineId:"acceptance"))).GetProperty("externalInputEvents").GetInt64();
+                File.WriteAllText(Path.Combine(output,"ready.json"),GuiProtocol.Encode(new{readyAt=DateTimeOffset.UtcNow,measurementSeconds=40,startFile=Path.Combine(output,"start.request")}));
+                Console.WriteLine("READY "+output);
+                if(waitForHuman)
+                {
+                    var readiness=Stopwatch.StartNew();
+                    while(!File.Exists(Path.Combine(output,"start.request")))
+                    {
+                        if(readiness.Elapsed.TotalSeconds>90)throw new Exception("HumanReadinessNotReceived");
+                        await Task.Delay(100);
+                    }
+                }
+                var initial=Data(await Call(new("status",MachineId:"acceptance")));
+                var before=initial.GetProperty("externalInputEvents").GetInt64();var hardwareBefore=initial.GetProperty("hardwareInputEvents").GetInt64();
+                var measurementStarted=DateTimeOffset.UtcNow;
                 timer.Restart();int iterations=0,afterActivity=0;long external=0,hardware=0;
                 while(timer.Elapsed.TotalSeconds<40)
                 {
                     await Semantic(Window(0),"병행 "+iterations++);
-                    var status=Data(await Call(new("status",MachineId:"acceptance")));external=status.GetProperty("externalInputEvents").GetInt64()-before;hardware=status.GetProperty("hardwareInputEvents").GetInt64();
+                    var status=Data(await Call(new("status",MachineId:"acceptance")));external=status.GetProperty("externalInputEvents").GetInt64()-before;hardware=status.GetProperty("hardwareInputEvents").GetInt64()-hardwareBefore;
                     if(external>0 && ++afterActivity>=3)break;await Task.Delay(100);
                 }
-                result=new{iterations,externalNonDriverInputEvents=external,hardwareInputEvents=hardware,targetForegroundEvents=foreground.Count,driverInputEvents=receipts.Sum(r=>r.GetProperty("inputEventsSent").GetInt32()),sessionKind=WindowsDesktop.SessionKind(current.SessionId)};
+                result=new{iterations,measurementStarted,measurementMilliseconds=timer.Elapsed.TotalMilliseconds,externalNonDriverInputEvents=external,hardwareInputEvents=hardware,targetForegroundEvents=foreground.Count,driverInputEvents=receipts.Sum(r=>r.GetProperty("inputEventsSent").GetInt32()),sessionKind=WindowsDesktop.SessionKind(current.SessionId)};
                 if(foreground.Count!=0||receipts.Any(r=>r.GetProperty("inputEventsSent").GetInt32()!=0))throw new Exception("동시 작업 중 간섭을 관측했다.");
                 verdict=external>0?"PASS":"NOT_RUN";
             }
             else
             {
-                var baseline=Window(0);var semantic=Window(1);await Request("focus",new{windowId=baseline});foreground=new ForegroundProbe(processes[1].Identity.Pid);
+                // 속도 비교는 같은 프로세스·같은 전경 창 조건으로 맞춘다. 공유 화면 비간섭은 별도 concurrent 검증이다.
+                var baseline=Window(0);var semantic=baseline;await Request("focus",new{windowId=baseline});foreground=new ForegroundProbe(processes[0].Identity.Pid);await Task.Delay(50);var initialForeground=foreground.Count;
                 async Task Physical(string value)
                 {
+                    await Request("focus",new{windowId=baseline});
                     await Request("click",new{windowId=baseline,automationId="Editor"});await Request("chord",new{windowId=baseline,keys=new[]{"CTRL","A"}});await Request("type-text",new{windowId=baseline,text=value});await Request("click",new{windowId=baseline,automationId="Apply"});await Request("wait-condition",new{windowId=baseline,selector=new{automationId="Result"},condition="value-equals",expected=value});
                 }
-                // 같은 바이너리의 두 창에서 각 경로를 한 번 예열하고 측정에서 제외한다.
+                // 같은 창에서 각 경로를 한 번 예열하고 측정에서 제외한다.
                 await Physical("비교 예열");await Semantic(semantic,"비교 예열");
                 var samples=new List<object>();
                 async Task<object> Measure(Func<Task> operation)
@@ -112,12 +128,20 @@ static class DesktopAcceptanceTests
                     else{uia=await Measure(()=>Semantic(semantic,value));input=await Measure(()=>Physical(value));}
                     samples.Add(new{iteration=i,order=i%2==0?"input-then-uia":"uia-then-input",input,uia});
                 }
-                result=new{samples,warmupPerPath=1,measuredSamplesPerPath=3,targetForegroundEvents=foreground.Count,fixtureHash=processes[0].Identity.ImageHash,setupExcluded=true,screenCaptureRequested=false};
+                result=new{samples,warmupPerPath=1,measuredSamplesPerPath=3,targetForegroundEvents=foreground.Count-initialForeground,initialForegroundEntries=initialForeground,fixtureInstances=1,comparisonCondition="same-foreground-window",fixtureHash=processes[0].Identity.ImageHash,setupExcluded=true,screenCaptureRequested=false};
                 var semanticReceipts=receipts.Where(r=>r.GetProperty("operation").GetString() is "set-value" or "invoke");
-                if(foreground.Count!=0||semanticReceipts.Any(r=>r.GetProperty("inputEventsSent").GetInt32()!=0))throw new Exception("UIA 경로의 간섭을 관측했다.");verdict="PASS";
+                if(foreground.Count!=initialForeground||semanticReceipts.Any(r=>r.GetProperty("inputEventsSent").GetInt32()!=0))throw new Exception("비교 측정 중 예상하지 않은 전경 변경 또는 UIA 전역 입력을 관측했다.");verdict="PASS";
             }
         }
-        catch(Exception e){error=e.Message;}
+        catch(Exception e)
+        {
+            error=e.Message;
+            if(agent?.IsCompleted==false&&host?.IsCompleted==false)try
+            {
+                var status=Data(await Call(new("status",MachineId:"acceptance")));
+                failureDiagnostics=new{activityMonitorState=status.GetProperty("activityMonitorState").GetString(),externalInputsSinceSessionOpen=status.GetProperty("externalInputEvents").GetInt64()-externalAtStart,hardwareInputsSinceSessionOpen=status.GetProperty("hardwareInputEvents").GetInt64()-hardwareAtStart};
+            }catch{}
+        }
         finally
         {
             foreground?.Dispose();
@@ -127,7 +151,7 @@ static class DesktopAcceptanceTests
             inputReleased=!agentStore.Exists("held-input.json")||agentStore.Read<HeldInput[]>("held-input.json").Length==0;
             ended=true;foreach(var p in processes){ended &= Processes.KillOwned(p.Identity);p.Job.Dispose();p.Process.Dispose();}
             if(!ended||!inputReleased||agent?.IsCompleted==false||host?.IsCompleted==false)verdict="FAIL";
-            File.WriteAllText(Path.Combine(output,"summary.json"),GuiProtocol.Encode(new{verdict,error,result,closed,inputReleased,ended,agentStopped=agent?.IsCompleted,controllerStopped=host?.IsCompleted,receipts}));
+            File.WriteAllText(Path.Combine(output,"summary.json"),GuiProtocol.Encode(new{verdict,error,result,failureDiagnostics,targetForegroundEvents=foreground?.Count,closed,inputReleased,ended,agentStopped=agent?.IsCompleted,controllerStopped=host?.IsCompleted,receipts}));
         }
         Console.WriteLine(verdict+" "+(concurrent?"실제 동시 작업":"동일 fixture 입력/UIA 비교")+". "+output);return verdict=="PASS"?0:verdict=="NOT_RUN"?2:1;
     }

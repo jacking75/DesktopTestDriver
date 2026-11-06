@@ -19,6 +19,7 @@ public sealed class GuiRequestHandler
     public InteractionGuard? Interaction { get; init; }
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> windowOwners = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Session, string Window, ObservationNode Node)> observed = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string,string> observedAliases=new();
     public GuiRequestHandler(StateStore store, IGuiDesktop desktop, ControlSessions sessions, GuiInput input, int maxStop = 3000, string machineUsage = "shared")
     {
         this.store = store; this.desktop = desktop; this.sessions = sessions; this.input = input; this.maxStop = maxStop; this.machineUsage = machineUsage;
@@ -169,6 +170,7 @@ public sealed class GuiRequestHandler
                 if(closing)
                 {
                     foreach(var element in observed.Where(e=>e.Value.Session==s.Info.ControlSessionId).ToArray())observed.TryRemove(element.Key,out _);
+                    foreach(var alias in observedAliases.Keys.Where(k=>k.StartsWith(s.Info.ControlSessionId+"|",StringComparison.Ordinal)).ToArray())observedAliases.TryRemove(alias,out _);
                     foreach(var window in windowOwners.Where(w=>w.Value==s.Info.ControlSessionId).ToArray()){windowOwners.TryRemove(window.Key,out _);windows.Retire(window.Key);}
                 }
                 // A fresh permit lets blocked control sessions perform observation only.
@@ -183,22 +185,28 @@ public sealed class GuiRequestHandler
         var a = r.Arguments; string T(string name) => GuiProtocol.Text(a, name);
         var selector = a.TryGetProperty("selector", out var se) ? GuiProtocol.Decode<ElementSelector>(se.GetRawText()) : null;
         ObservationNode? previous = null;
-        if (!AutomationOperations.ReadOnly(r.Operation) || r.Operation == "find-item")
+        if (!AutomationOperations.ReadOnly(r.Operation) || r.Operation == "find-item" || r.Operation=="capabilities"&&a.TryGetProperty("elementId",out _))
         {
             if (!observed.TryGetValue(T("elementId"), out var saved) || saved.Session != s.Info.ControlSessionId || saved.Window != T("windowId")) throw new GuiException("TargetScopeMismatch");
             previous = saved.Node;
             if (T("snapshotToken") != previous.SnapshotToken) throw new GuiException("StaleElement");
         }
-        var command = new UiaCommand(w, r.Operation, selector, previous?.ElementId, previous?.SnapshotToken,
+        ObservationNode? searchRoot=null;
+        if(a.TryGetProperty("searchRootElementId",out var searchId))
+        {
+            if(!observed.TryGetValue(searchId.GetString()!,out var savedRoot)||savedRoot.Session!=s.Info.ControlSessionId||savedRoot.Window!=T("windowId"))throw new GuiException("TargetScopeMismatch");
+            searchRoot=savedRoot.Node;if(T("searchRootSnapshotToken")!=searchRoot.SnapshotToken)throw new GuiException("StaleElement");
+        }
+        var command = new UiaCommand(w, r.Operation, selector ?? (previous?.AutomationId.Length>0?new ElementSelector(AutomationId:previous.AutomationId):null), previous?.ElementId, previous?.SnapshotToken,
             a.TryGetProperty("value", out var value) ? value.GetString() : null,
             a.TryGetProperty("desiredState", out var ds) ? ds.GetString() : null,
             a.TryGetProperty("expanded", out var ex) ? ex.GetBoolean() : null,
             a.TryGetProperty("horizontal", out var h) ? h.GetDouble() : null,
             a.TryGetProperty("vertical", out var v) ? v.GetDouble() : null,
-            a.TryGetProperty("treeView", out var view) ? view.GetString()! : "control", s.Info.ControlSessionId, a.TryGetProperty("itemName", out var itemName) ? itemName.GetString() : null);
+            a.TryGetProperty("treeView", out var view) ? view.GetString()! : "control", s.Info.ControlSessionId, a.TryGetProperty("itemName", out var itemName) ? itemName.GetString() : null){RootOnly=a.TryGetProperty("rootOnly",out var rootOnly)&&rootOnly.GetBoolean(),SearchRootRuntimeId=searchRoot?.ElementId,SearchRootSnapshotToken=searchRoot?.SnapshotToken};
         if (previous != null && !AutomationOperations.ReadOnly(r.Operation))
         {
-            var preflight = uia.Automation(command with { Operation = "capabilities" }, cancellation);
+            var preflight = uia.Automation(command with { Operation = "capabilities",IntendedOperation=r.Operation }, cancellation);
             var now = preflight.Target ?? throw new GuiException("StaleElement");
             if (s.Info.InteractionPolicy == "background-only") new ProfileRegistry(store).Check(s.Info.ApplicationProfileId, w.Process, r.Operation, now, preflight.Observation);
             if (!now.Enabled) throw new GuiException("ElementDisabled");
@@ -218,7 +226,7 @@ public sealed class GuiRequestHandler
             var satisfied = condition switch
             {
                 "exists" => target != null,
-                "absent" => result.Observation.Complete && target == null,
+                "absent" => (result.Observation.Complete||searchRoot!=null&&result.Observation.QueryComplete) && target == null,
                 "enabled" => target?.Enabled == true,
                 "value-equals" => target?.Value.Available == true && target.Value.Text == expected,
                 "text-contains" => target?.Value.Available == true && target.Value.Text?.Contains(expected, StringComparison.Ordinal) == true,
@@ -236,14 +244,14 @@ public sealed class GuiRequestHandler
             ObservationNode Redact(ObservationNode node) => hidden.Contains(node.ElementId) ? node with { Name = "[redacted]", Value = new(false, null, "redacted") } : node;
             result = result with { Observation = result.Observation with { Nodes = result.Observation.Nodes.Select(Redact).ToArray() }, Target = result.Target == null ? null : Redact(result.Target) };
         }
-        var aliases = result.Observation.Nodes.ToDictionary(n => n.ElementId, _ => "element-" + Guid.NewGuid().ToString("N"));
+        var aliases = result.Observation.Nodes.ToDictionary(n=>n.ElementId,n=>observedAliases.GetOrAdd(s.Info.ControlSessionId+"|"+T("windowId")+"|"+n.ElementId+"|"+n.SnapshotToken,_=>"element-"+Guid.NewGuid().ToString("N")));
         ObservationNode Export(ObservationNode node)
         {
             var id = aliases[node.ElementId]; observed[id] = (s.Info.ControlSessionId, T("windowId"), node);
             return node with { ElementId = id, ParentId = node.ParentId != null && aliases.TryGetValue(node.ParentId, out var parent) ? parent : null };
         }
         var observation = result.Observation with { Root = aliases.GetValueOrDefault(result.Observation.Root, ""), Nodes = result.Observation.Nodes.Select(Export).ToArray() };
-        return new { observation, target = result.Target == null ? null : Export(result.Target), operationDescriptors = r.Operation == "capabilities" ? AutomationOperations.All : null, effectState = result.EffectState };
+        return new { observation, target = result.Target == null ? null : Export(result.Target), operationDescriptors = r.Operation == "capabilities" ? AutomationOperations.All : null, effectState = result.EffectState,lookupKind=result.LookupKind,dispatchKind=result.DispatchKind };
     }
     private object Perform(GuiRequest r, ControlSession s, CancellationToken cancellation, Action sent, Action effect)
     {

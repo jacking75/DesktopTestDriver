@@ -37,7 +37,7 @@ $example=Join-Path $isolated 'Controller/examples/standalone/Inspect.csproj'
 & dotnet build $example -c Release -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false --nologo | Tee-Object -FilePath (Join-Path $isolated 'sdk-example-build.txt') | Out-Null
 if($LASTEXITCODE -ne 0){throw 'Isolated SDK example did not compile from distributed DLLs'}
 if($OfflineOnly){
-    @{isolated=$isolated;roles=2;links='valid';manifestHashes='valid';sdkExample='compiled-from-distributed-DLLs';desktopLifecycle='NOT_RUN';reason='no-active-user-desktop'} | ConvertTo-Json -Compress
+    @{isolated=$isolated;roles=2;links='valid';manifestHashes='valid';sdkExample='compiled-from-distributed-DLLs';desktopLifecycle='NOT_RUN';reason='explicit-offline-only'} | ConvertTo-Json -Compress
     return
 }
 $controller=Join-Path $isolated 'Controller'; $agent=Join-Path $isolated 'Agent'
@@ -69,7 +69,6 @@ try {
     & $agentManage -Action Stop | Out-Null
     & $controllerManage -Action Restart | Out-Null
     # 배포 폴더 밖의 제품 저장소를 참조하지 않고 자체 fixture를 관측한다.
-    & $controllerManage -Action Start | Out-Null
     & $agentManage -Action Start | Out-Null
     $fixtureExe=Join-Path $isolated 'test-apps/FormsWorkbench/FormsWorkbench.exe'
     $fixture=Start-Process -FilePath $fixtureExe -ArgumentList '--quiet' -WindowStyle Hidden -PassThru

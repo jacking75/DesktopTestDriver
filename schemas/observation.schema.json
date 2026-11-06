@@ -89,6 +89,9 @@
               "null"
             ],
             "default": null
+          },
+          "detailState": {
+            "type": "string"
           }
         },
         "required": [
@@ -135,6 +138,9 @@
     },
     "virtualizationState": {
       "type": "string"
+    },
+    "queryComplete": {
+      "type": "boolean"
     }
   },
   "required": [
