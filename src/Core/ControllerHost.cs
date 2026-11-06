@@ -10,7 +10,7 @@ using System.Text.Json;
 namespace DesktopTestDriver;
 
 public sealed record LocalCommand(string Command, string? MachineId = null, string? SessionId = null, string? RequestId = null,
-    string? Request = null, string Mode = "control", int IdleSeconds = 900);
+    string? Request = null, string Mode = "control", int IdleSeconds = 900, int ApiVersion = 1, string? InteractionPolicy = null, DesktopProcess[]? TargetScope = null, long ExpectedRevision = 0, string? Resolution = null, string? EvidenceRef = null, string? ApplicationProfileId = null);
 public sealed record ConnectedAgent(AgentHello Hello, string CertificateHash, RpcPeer Peer);
 public sealed class ControllerHost
 {
@@ -85,7 +85,7 @@ public sealed class ControllerHost
                     });
                 case "session-open":
                     var a = Agent(command.MachineId ?? throw new GuiException("MachineRequired"));
-                    var opened = await a.Peer.Call<GuiResponse>("open", new { mode = command.Mode, idleSeconds = command.IdleSeconds }, timeout.Token); Remember(opened); return opened;
+                    var opened = await a.Peer.Call<GuiResponse>("open", new { mode = command.Mode, idleSeconds = command.IdleSeconds, apiVersion = command.ApiVersion, interactionPolicy = command.InteractionPolicy, targetScope = command.TargetScope, applicationProfileId = command.ApplicationProfileId }, timeout.Token); Remember(opened); return opened;
                 case "session-status":
                     if (command.SessionId != null)
                     {
@@ -120,6 +120,12 @@ public sealed class ControllerHost
                         processing = Task.Run(() => Forward(r, peer, accepted.Entry));
                     }
                     return await processing;
+                case "session-pause":
+                case "session-resume":
+                case "session-reconcile":
+                    var controlled = Session(command.SessionId!);
+                    var result = await Agent(controlled.MachineId).Peer.Call<GuiResponse>(command.Command, new { sessionId = command.SessionId, expectedRevision = command.ExpectedRevision, requestId = command.RequestId, resolution = command.Resolution, evidenceRef = command.EvidenceRef }, timeout.Token);
+                    Remember(result); return result;
                 case "shutdown": stop.Cancel(); return new("completed", Data: new { stopping = true });
                 default: return GuiResponse.Reject("InvalidCommand");
             }
@@ -155,7 +161,7 @@ public sealed class ControllerHost
                 lock (journal.Gate(entry.SessionId, entry.RequestId))
                 {
                     var latest = journal.Find(entry.SessionId, entry.RequestId)!;
-                    if (latest.Response.Status == "completionUnknown") journal.Save(latest with { AgentResponse = original, Response = original });
+                    if (latest.Response.Status == "completionUnknown") journal.Save(latest with { AgentResponse = original, Response = original, OriginalUnknownResponse = latest.OriginalUnknownResponse ?? latest.Response });
                     return journal.Result(entry.SessionId, entry.RequestId);
                 }
             }
@@ -181,7 +187,7 @@ public sealed class ControllerHost
             string code = e is GuiException g ? g.Code : e is OperationCanceledException ? "RequestTimeout" : "AgentDisconnected";
             response = new(entry.AgentResponse != null ? "failed" : forwarded ? "completionUnknown" : "rejected", r.RequestId, r.ControlSessionId,
                 Error: new(code, code), InputEventsSent: entry.AgentResponse?.InputEventsSent ?? 0, InputReleased: entry.AgentResponse?.InputReleased)
-            { Operation = r.Operation, MachineId = entry.MachineId };
+            { ApiVersion = r.ApiVersion, Operation = r.Operation, MachineId = entry.MachineId };
             if (forwarded)
             {
                 _ = Task.Run(async () =>
@@ -235,6 +241,7 @@ public sealed class ControllerHost
             using var opening = CancellationTokenSource.CreateLinkedTokenSource(cancellation); opening.CancelAfter(5000);
             await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = certificate, ClientCertificateRequired = true, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13 }, opening.Token);
             var hello = await GuiWire.Read<AgentHello>(ssl, opening.Token);
+            if (hello.WireVersion != GuiProtocol.WireVersion) { await GuiWire.Write(ssl, GuiResponse.Reject("IncompatiblePeerVersion"), opening.Token); return; }
             if (!peers.Any(p => p.MachineId == hello.MachineId && p.CertificateHash == pin)) { await GuiWire.Write(ssl, GuiResponse.Reject("MachineCertificateMismatch"), opening.Token); return; }
             await using var peer = new RpcPeer(ssl) { Handler = (method, _) => Task.FromResult<object>(method == "heartbeat" ? new GuiResponse("completed") : GuiResponse.Reject("InvalidCommand")) };
             var agent = new ConnectedAgent(hello, pin!, peer);

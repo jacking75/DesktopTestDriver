@@ -1,0 +1,58 @@
+{
+  "type": [
+    "object",
+    "null"
+  ],
+  "properties": {
+    "operation": {
+      "type": "string"
+    },
+    "backend": {
+      "type": "string"
+    },
+    "readOnly": {
+      "type": "boolean"
+    },
+    "requiredPatterns": {
+      "type": "array",
+      "items": {
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "maySendGlobalInput": {
+      "type": "boolean",
+      "default": false
+    },
+    "mayActivateWindow": {
+      "type": "boolean",
+      "default": false
+    },
+    "mayOpenWindow": {
+      "type": "boolean",
+      "default": false
+    },
+    "mayChangeView": {
+      "type": "boolean",
+      "default": false
+    },
+    "replaySafety": {
+      "type": "string",
+      "default": "journal-only"
+    },
+    "timeoutLimit": {
+      "type": "integer",
+      "default": 5000
+    }
+  },
+  "required": [
+    "operation",
+    "backend",
+    "readOnly",
+    "requiredPatterns"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

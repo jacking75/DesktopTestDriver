@@ -12,17 +12,17 @@ public sealed record GuiError(string Code, string Message);
 public sealed record GuiResponse(string Status, string? RequestId = null, string? ControlSessionId = null,
     object? Data = null, GuiError? Error = null, int InputEventsSent = 0, bool? InputReleased = null)
 {
-    public int ApiVersion => 1;
+    public int ApiVersion { get; init; } = 1;
     public string? Operation { get; init; }
     public string? MachineId { get; init; }
     public DateTimeOffset ObservedAt { get; init; } = DateTimeOffset.UtcNow;
     [JsonIgnore]
     public int ExitCode => Status switch { "completed" => 0, "completionUnknown" => 2, "running" => 3, _ => 1 };
-    public static GuiResponse Reject(string code, GuiRequest? r = null) => new("rejected", r?.RequestId, r?.ControlSessionId, Error: new(code, code)) { Operation = r?.Operation };
+    public static GuiResponse Reject(string code, GuiRequest? r = null) => new("rejected", r?.RequestId, r?.ControlSessionId, Error: new(code, code)) { Operation = r?.Operation, ApiVersion = r?.ApiVersion ?? 1 };
 }
 public static class GuiProtocol
 {
-    public const int Version = 1, MaxRequestBytes = 1_048_576, MaxCommandMilliseconds = 5000;
+    public const int Version = 1, WireVersion = 2, MaxRequestBytes = 1_048_576, MaxCommandMilliseconds = 5000;
     public static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -30,7 +30,7 @@ public static class GuiProtocol
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
     public static readonly string[] Operations = ["windows", "controls", "capture", "focus", "click", "type-text", "key", "chord", "move", "wheel", "drag", "launch", "close-window", "terminate-owned", "release-input"];
-    public static bool ReadOnly(string operation) => operation is "windows" or "controls" or "capture";
+    public static bool ReadOnly(string operation) => operation is "windows" or "controls" or "capture" || AutomationOperations.ReadOnly(operation);
     public static string Encode<T>(T value) => JsonSerializer.Serialize(value, Json);
     public static T Decode<T>(string value)
     {
@@ -55,14 +55,19 @@ public static class GuiProtocol
         var root = document.RootElement;
         Fields(root, "apiVersion requestId controlSessionId operation timeoutMilliseconds arguments");
         var version = root.GetProperty("apiVersion").GetInt32();
-        if (version != Version) throw new GuiException("UnsupportedApiVersion");
+        if (version is not (1 or 2)) throw new GuiException("UnsupportedApiVersion");
         var operation = Text(root, "operation");
-        if (!Operations.Contains(operation)) throw new GuiException("UnsupportedOperation");
+        if (!Operations.Contains(operation) && !(version == 2 && AutomationOperations.Contains(operation))) throw new GuiException("UnsupportedOperation");
         var id = Text(root, "requestId"); var session = Text(root, "controlSessionId");
         if (!Id(id) || !Id(session)) throw new GuiException("InvalidRequest");
         var timeout = root.TryGetProperty("timeoutMilliseconds", out var t) ? t.GetInt32() : 5000;
         if (timeout is < 1 or > 5000) throw new GuiException("InvalidTimeout");
         var a = root.GetProperty("arguments");
+        if (version == 2 && AutomationOperations.Contains(operation))
+        {
+            ValidateAutomation(operation, a);
+            return new(version, id, session, operation, timeout, a.Clone());
+        }
         Fields(a, operation switch
         {
             "windows" or "release-input" => "",
@@ -75,7 +80,7 @@ public static class GuiProtocol
             "move" => "windowId position",
             "wheel" => "windowId position delta",
             "drag" => "windowId captureId start end button steps",
-            "launch" => "executable arguments lifetime",
+            "launch" => version == 2 ? "executable arguments lifetime workingDirectory" : "executable arguments lifetime",
             "terminate-owned" => "processIds",
             _ => ""
         });
@@ -104,6 +109,7 @@ public static class GuiProtocol
                 _ = Text(a, "captureId"); Position(a.GetProperty("start"), false); Position(a.GetProperty("end"), false); Button(a);
                 if (a.TryGetProperty("steps", out var steps) && steps.GetInt32() is < 1 or > 100) throw new GuiException("InvalidSteps"); break;
             case "launch":
+                if (a.TryGetProperty("workingDirectory", out var wd) && (!Path.IsPathFullyQualified(wd.GetString()!) || !Directory.Exists(wd.GetString()))) throw new GuiException("InvalidWorkingDirectory");
                 if (!Path.IsPathFullyQualified(Text(a, "executable"))) throw new GuiException("InvalidExecutable");
                 foreach (var arg in a.GetProperty("arguments").EnumerateArray()) if (arg.ValueKind != JsonValueKind.String || arg.GetString()!.Contains('\0')) throw new GuiException("InvalidArguments");
                 if (a.TryGetProperty("lifetime", out var life) && life.GetString() is not ("keep" or "session")) throw new GuiException("InvalidLifetime"); break;
@@ -116,6 +122,54 @@ public static class GuiProtocol
         if (operation == "drag" && !normalized.ContainsKey("steps")) normalized["steps"] = JsonSerializer.SerializeToElement(10);
         if (operation == "launch" && !normalized.ContainsKey("lifetime")) normalized["lifetime"] = JsonSerializer.SerializeToElement("keep");
         return new(version, id, session, operation, timeout, JsonSerializer.SerializeToElement(normalized));
+    }
+    private static void ValidateAutomation(string operation, JsonElement a)
+    {
+        Fields(a, operation switch
+        {
+            "find-window" or "wait-window" => "title className ownerWindowId pollMilliseconds",
+            "inspect" => "windowId treeView",
+            "capabilities" => "windowId selector",
+            "find-element" => "windowId selector",
+            "find-item" => "windowId elementId snapshotToken itemName",
+            "wait-condition" => "windowId selector condition expected pollMilliseconds",
+            "set-value" => "windowId elementId snapshotToken value expectedValueHash",
+            "set-toggle" => "windowId elementId snapshotToken desiredState",
+            "set-expanded" => "windowId elementId snapshotToken expanded",
+            "scroll-container" => "windowId elementId snapshotToken horizontal vertical",
+            _ => "windowId elementId snapshotToken"
+        });
+        if (operation is "find-window" or "wait-window")
+        {
+            if (!a.TryGetProperty("title", out _) && !a.TryGetProperty("className", out _) && !a.TryGetProperty("ownerWindowId", out _)) throw new GuiException("InvalidWindowSelector");
+            foreach (var f in new[] { "title", "className", "ownerWindowId" }) if (a.TryGetProperty(f, out _)) _ = Text(a, f);
+            if (a.TryGetProperty("pollMilliseconds", out var interval) && interval.GetInt32() is < 100 or > 1000) throw new GuiException("InvalidPollInterval");
+            return;
+        }
+        _ = Text(a, "windowId");
+        if (a.TryGetProperty("treeView", out var view) && view.GetString() is not ("control" or "raw" or "content")) throw new GuiException("InvalidTreeView");
+        if (a.TryGetProperty("selector", out var selector)) ValidateSelector(selector, 0);
+        if (operation is "find-element" or "wait-condition" && !a.TryGetProperty("selector", out _)) throw new GuiException("InvalidSelector");
+        if (operation == "find-item") _ = Text(a, "itemName");
+        if (!AutomationOperations.ReadOnly(operation) || operation == "find-item") { _ = Text(a, "elementId"); _ = Text(a, "snapshotToken"); }
+        if (operation == "set-value" && (a.GetProperty("value").GetString() is not {} value || value.Length > 4096 || !ValidUnicode(value) || value.Contains('\0'))) throw new GuiException("InvalidText");
+        if (operation == "set-toggle" && Text(a, "desiredState") is not ("on" or "off")) throw new GuiException("InvalidToggleState");
+        if (operation == "set-expanded") _ = a.GetProperty("expanded").GetBoolean();
+        if (operation == "scroll-container") foreach (var field in new[] { "horizontal", "vertical" }) { var n = a.GetProperty(field).GetDouble(); if (!double.IsFinite(n) || n is < -1 or > 100) throw new GuiException("InvalidScrollPercent"); }
+        if (operation == "wait-condition")
+        {
+            if (Text(a, "condition") is not ("exists" or "absent" or "enabled" or "value-equals" or "text-contains" or "toggle-equals")) throw new GuiException("InvalidCondition");
+            if (a.TryGetProperty("pollMilliseconds", out var poll) && poll.GetInt32() is < 100 or > 1000) throw new GuiException("InvalidPollInterval");
+        }
+    }
+    public static void ValidateSelector(JsonElement selector, int depth = 0)
+    {
+        if (depth > 8) throw new GuiException("InvalidSelector");
+        Fields(selector, "automationId controlType name className frameworkId ancestorAutomationId parent");
+        if (!selector.EnumerateObject().Any()) throw new GuiException("InvalidSelector");
+        foreach (var p in selector.EnumerateObject())
+            if (p.Name == "parent") ValidateSelector(p.Value, depth + 1);
+            else if (p.Value.GetString() is not { Length: > 0 and <= 1024 }) throw new GuiException("InvalidSelector");
     }
     private static bool ValidUnicode(string value)
     {

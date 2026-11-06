@@ -7,17 +7,41 @@ try
     var list = args.ToList(); var config = Path.Combine(AppContext.BaseDirectory, "Controller.json");
     if (list.Count >= 2 && list[0] == "--config") { config = Path.GetFullPath(list[1]); list.RemoveRange(0, 2); }
     var a = list.ToArray();
-    if (a is ["--help"]) { Console.WriteLine($"DesktopTestDriver 0.3 / GUI API 1\n--status [--machine TARGET]\n--session-open --machine TARGET [--mode control|observe] [--idle-seconds 900]\n--session-status [CONTROL_ID]\n--request FILE\n--request-status CONTROL_ID REQUEST_ID\n--session-close CONTROL_ID\n--config FILE (first option)\nSetup: --initialize STATE ADDRESS PORT | --register MACHINE CERTIFICATE.cer\nHost: --serve | --shutdown\nUsage: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}\nSetup: {Path.Combine(AppContext.BaseDirectory, "scripts", "manage.ps1")}"); return 0; }
+    if (a is ["--help"]) { Console.WriteLine($"DesktopTestDriver 0.3 / GUI API 1/2\n--request-stdin | --doctor --machine TARGET | --inspect --session ID --window ID\n--profile-validate FILE\n--session-pause ID | --session-resume ID --expected-revision N\n--status [--machine TARGET]\n--session-open --machine TARGET [--mode control|observe] [--idle-seconds 900]\n--session-status [CONTROL_ID]\n--request FILE\n--request-status CONTROL_ID REQUEST_ID\n--session-close CONTROL_ID\n--config FILE (first option)\nSetup: --initialize STATE ADDRESS PORT | --register MACHINE CERTIFICATE.cer\nHost: --serve | --shutdown\nUsage: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}\nSetup: {Path.Combine(AppContext.BaseDirectory, "scripts", "manage.ps1")}"); return 0; }
     if (a is ["--initialize", var state, var address, var port])
     {
         if (File.Exists(config)) throw new GuiException("ConfigurationExists"); var settings = new ControllerSettings(Path.GetFullPath(state), address, int.Parse(port)); ConnectionSettings.Validate(settings); var store = new StateStore(settings.StateDirectory); ConnectionSettings.Initialize(store, "Controller");
         File.WriteAllText(config, GuiProtocol.Encode(settings)); Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed", Data: new { configuration = config, publicCertificate = store.PathFor("identity.cer") }))); return 0;
     }
+    if (a is ["--export-schemas", var schemaDirectory])
+    {
+        Directory.CreateDirectory(schemaDirectory);
+        foreach (var schema in ContractSchemas.Export()) File.WriteAllText(Path.Combine(schemaDirectory, schema.Key), schema.Value.ToJsonString(new() { WriteIndented = true }));
+        return 0;
+    }
+    if (a is ["--profile-validate", var profileFile])
+    {
+        var diagnostics = ProfileValidator.Validate(File.ReadAllText(profileFile));
+        var validationReply = new GuiResponse(diagnostics.Any(d => d.State == "unsupported") ? "rejected" : "completed", Data: new { diagnostics });
+        Console.WriteLine(GuiProtocol.Encode(validationReply)); return validationReply.ExitCode;
+    }
     var c = ConnectionSettings.Controller(config);
     if (a is ["--register", var machine, var cert]) { ConnectionSettings.Register(new(c.StateDirectory), machine, cert); Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed"))); return 0; }
     if (a is ["--serve"] || a.Length == 0) { using var stop = new CancellationTokenSource(); Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); }; await new ControllerHost(c).Run(stop.Token); return 0; }
     LocalCommand command;
-    if (a is ["--status"]) command = new("status");
+    if (a is ["--doctor", "--machine", var doctorTarget]) command = new("status", MachineId: doctorTarget);
+    else if (a is ["--session-pause", var pause]) command = new("session-pause", SessionId: pause);
+    else if (a is ["--session-resume", var resume, "--expected-revision", var revision]) command = new("session-resume", SessionId: resume, ExpectedRevision: long.Parse(revision));
+    else if (a is ["--session-reconcile", var reconciled, "--request-id", var reconciledRequest, "--resolution", var resolution, "--evidence-ref", var evidenceRef, "--expected-revision", var reconciledRevision]) command = new("session-reconcile", SessionId: reconciled, RequestId: reconciledRequest, ExpectedRevision: long.Parse(reconciledRevision), Resolution: resolution, EvidenceRef: evidenceRef);
+    else if (a is ["--request-stdin"])
+    {
+        var buffer = new char[GuiProtocol.MaxRequestBytes + 1]; var length = 0; int n;
+        while (length < buffer.Length && (n = Console.In.Read(buffer, length, buffer.Length - length)) > 0) length += n;
+        if (length > GuiProtocol.MaxRequestBytes) throw new GuiException("RequestTooLarge");
+        var json = new string(buffer, 0, length); GuiProtocol.Parse(json); command = new("request", Request: json);
+    }
+    else if (a is ["--inspect", "--session", var inspectSession, "--window", var inspectWindow]) command = new("request", Request: GuiProtocol.Encode(new GuiRequest(2, "inspect-" + Guid.NewGuid().ToString("N"), inspectSession, "inspect", 5000, System.Text.Json.JsonSerializer.SerializeToElement(new { windowId = inspectWindow }))));
+    else if (a is ["--status"]) command = new("status");
     else if (a is ["--status", "--machine", var target]) command = new("status", MachineId: target);
     else if (a is ["--session-status"]) command = new("session-status");
     else if (a is ["--session-status", var sid]) command = new("session-status", SessionId: sid);
@@ -30,9 +54,9 @@ try
     else if (a is ["--shutdown"]) command = new("shutdown");
     else if (a.Length >= 3 && a[0] == "--session-open")
     {
-        string? targetMachine = null; var mode = "control"; int idle = 900; var seen = new HashSet<string>();
-        for (int i = 1; i < a.Length; i += 2) { if (i + 1 >= a.Length || !seen.Add(a[i])) throw new GuiException("InvalidCommand"); switch (a[i]) { case "--machine": targetMachine = a[i + 1]; break; case "--mode": mode = a[i + 1]; break; case "--idle-seconds": idle = int.Parse(a[i + 1]); break; default: throw new GuiException("InvalidCommand"); } }
-        if (targetMachine == null || mode is not ("control" or "observe") || idle is < 1 or > 86400) throw new GuiException("InvalidSessionOptions"); command = new("session-open", MachineId: targetMachine, Mode: mode, IdleSeconds: idle);
+        string? targetMachine = null; var mode = "control"; int idle = 900; int apiVersion = 1; string? policy = null; string? applicationProfile = null; DesktopProcess[]? targets = null; var seen = new HashSet<string>();
+        for (int i = 1; i < a.Length; i += 2) { if (i + 1 >= a.Length || !seen.Add(a[i])) throw new GuiException("InvalidCommand"); switch (a[i]) { case "--application-profile": applicationProfile = a[i + 1]; break; case "--api-version": apiVersion = int.Parse(a[i + 1]); break; case "--interaction-policy": policy = a[i + 1]; break; case "--target-scope": targets = GuiProtocol.Decode<DesktopProcess[]>(File.ReadAllText(a[i + 1])); break; case "--machine": targetMachine = a[i + 1]; break; case "--mode": mode = a[i + 1]; break; case "--idle-seconds": idle = int.Parse(a[i + 1]); break; default: throw new GuiException("InvalidCommand"); } }
+        if (targetMachine == null || mode is not ("control" or "observe") || idle is < 1 or > 86400) throw new GuiException("InvalidSessionOptions"); command = new("session-open", MachineId: targetMachine, Mode: mode, IdleSeconds: idle, ApiVersion: apiVersion, InteractionPolicy: policy, TargetScope: targets, ApplicationProfileId: applicationProfile);
     }
     else throw new GuiException("InvalidCommand");
     var reply = await ControllerHost.Call(c, command); Console.WriteLine(GuiProtocol.Encode(reply)); return reply.ExitCode;

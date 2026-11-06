@@ -4,6 +4,7 @@ namespace DesktopTestDriver;
 
 internal static class Native
 {
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr window, uint command);
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] public struct NativeRect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct Monitor { public int Size; public NativeRect Bounds, Work; public uint Flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Device; }

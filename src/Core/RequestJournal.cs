@@ -7,14 +7,25 @@ public sealed record JournalEntry(string SessionId, string RequestId, string Fin
     GuiResponse? AgentResponse = null, string? MachineId = null, string? CertificateHash = null)
 {
     public string Phase { get; init; } = "accepted";
+    public GuiResponse? OriginalUnknownResponse { get; init; }
 }
 public sealed class RequestJournal(StateStore store)
 {
     private readonly ConcurrentDictionary<string, object> gates = new();
     private static string Name(string session, string request) => "request-" + GuiProtocol.Hash(System.Text.Encoding.UTF8.GetBytes(session + ":" + request)) + ".json";
     public object Gate(string session, string request) => gates.GetOrAdd(Name(session, request), _ => new());
-    public JournalEntry? Find(string session, string request) => store.Exists(Name(session, request)) ? store.Read<JournalEntry>(Name(session, request)) : null;
-    public void Save(JournalEntry entry) => store.Write(Name(entry.SessionId, entry.RequestId), entry);
+    public JournalEntry? Find(string session, string request) => store.Exists(Name(session, request)) ? ReadEntry(store,Name(session, request)) : null;
+    public static JournalEntry ReadEntry(StateStore store,string name)
+    {
+        var data=store.Read<System.Text.Json.JsonElement>(name);
+        return data.TryGetProperty("protectedJournal",out var encrypted) ? GuiProtocol.Decode<JournalEntry>(JournalProtection.Unprotect(encrypted.GetString()!,name)) : GuiProtocol.Decode<JournalEntry>(data.GetRawText());
+    }
+    public void Save(JournalEntry entry)
+    {
+        var name=Name(entry.SessionId,entry.RequestId);
+        if(entry.Response.ApiVersion==2) store.Write(name,new {protectedJournal=JournalProtection.Protect(GuiProtocol.Encode(entry),name)});
+        else store.Write(name,entry);
+    }
     public (JournalEntry Entry, bool New) Accept(GuiRequest r, Deadline deadline, string? machine = null, string? certificate = null)
     {
         lock (Gate(r.ControlSessionId, r.RequestId))
@@ -26,7 +37,7 @@ public sealed class RequestJournal(StateStore store)
                 return (existing, false);
             }
             var entry = new JournalEntry(r.ControlSessionId, r.RequestId, GuiProtocol.Fingerprint(r), r.Operation, deadline,
-                new("running", r.RequestId, r.ControlSessionId) { Operation = r.Operation, MachineId = machine }, r.Operation == "capture" ? GuiProtocol.Text(r.Arguments, "output") : null,
+                new("running", r.RequestId, r.ControlSessionId) { Operation = r.Operation, MachineId = machine, ApiVersion = r.ApiVersion }, r.Operation == "capture" ? GuiProtocol.Text(r.Arguments, "output") : null,
                 MachineId: machine, CertificateHash: certificate);
             Save(entry); return (entry, true);
         }
@@ -36,11 +47,11 @@ public sealed class RequestJournal(StateStore store)
         lock (Gate(r.ControlSessionId, r.RequestId))
         {
             var entry = Find(r.ControlSessionId, r.RequestId) ?? throw new GuiException("RequestNotFound");
-            if (entry.Response.Status is "running" or "completionUnknown") Save(entry with { Response = response, Phase = "final" });
+            if (entry.Response.Status is "running" or "completionUnknown") Save(entry with { Response = response, Phase = "final", OriginalUnknownResponse = entry.OriginalUnknownResponse ?? (response.Status == "completionUnknown" ? response : null) });
         }
     }
     public GuiResponse Result(string session, string request) => Find(session, request)?.Response ?? GuiResponse.Reject("RequestNotFound");
-    public IEnumerable<JournalEntry> Entries() => Directory.GetFiles(store.Root, "request-*.json").Select(p => store.Read<JournalEntry>(Path.GetFileName(p)));
+    public IEnumerable<JournalEntry> Entries() => Directory.GetFiles(store.Root, "request-*.json").Select(p => ReadEntry(store,Path.GetFileName(p)));
     public void Recover(bool controller)
     {
         foreach (var entry in Entries())
@@ -58,7 +69,7 @@ public sealed class RequestJournal(StateStore store)
                 }
                 else response = response with { Status = "failed", Error = new("ImageDeliveryInterrupted", "ImageDeliveryInterrupted") };
             }
-            Save(entry with { Response = response });
+            Save(entry with { Response = response, OriginalUnknownResponse = entry.OriginalUnknownResponse ?? (response.Status == "completionUnknown" ? response : null) });
         }
     }
 }

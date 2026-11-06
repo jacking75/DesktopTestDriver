@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows10.0.19041.0</TargetFramework><UseWPF>true</UseWPF><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup Condition="Exists('../../src/Client/Client.csproj')"><ProjectReference Include="../../src/Client/Client.csproj"/></ItemGroup>
+  <ItemGroup Condition="!Exists('../../src/Client/Client.csproj')">
+    <Reference Include="Client"><HintPath>../../Client.dll</HintPath></Reference>
+    <Reference Include="Core"><HintPath>../../Core.dll</HintPath></Reference>
+    <Reference Include="Contracts"><HintPath>../../Contracts.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

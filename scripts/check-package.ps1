@@ -1,4 +1,4 @@
-﻿param([Parameter(Mandatory=$true)][string]$Package)
+﻿param([Parameter(Mandatory=$true)][string]$Package,[switch]$OfflineOnly)
 $ErrorActionPreference='Stop'
 $repository=Split-Path -Parent $PSScriptRoot
 $isolated=Join-Path $repository ('artifacts/isolated-'+[guid]::NewGuid().ToString('N'))
@@ -32,6 +32,14 @@ foreach($role in @('Controller','Agent')) {
     $help=& (Join-Path $destination ($role+'.exe')) --help
     if($LASTEXITCODE -ne 0 -or ($help -join "`n") -notmatch 'GUI API 1' -or -not(($help -join "`n").Contains((Join-Path $destination 'docs\agent-usage.md')))){throw "Packaged help mismatch: $role"}
 }
+Copy-Item -LiteralPath (Join-Path $Package 'test-apps') -Destination (Join-Path $isolated 'test-apps') -Recurse
+$example=Join-Path $isolated 'Controller/examples/standalone/Inspect.csproj'
+& dotnet build $example -c Release -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false --nologo | Tee-Object -FilePath (Join-Path $isolated 'sdk-example-build.txt') | Out-Null
+if($LASTEXITCODE -ne 0){throw 'Isolated SDK example did not compile from distributed DLLs'}
+if($OfflineOnly){
+    @{isolated=$isolated;roles=2;links='valid';manifestHashes='valid';sdkExample='compiled-from-distributed-DLLs';desktopLifecycle='NOT_RUN';reason='no-active-user-desktop'} | ConvertTo-Json -Compress
+    return
+}
 $controller=Join-Path $isolated 'Controller'; $agent=Join-Path $isolated 'Agent'
 $controllerState=Join-Path $isolated 'controller-state';$agentState=Join-Path $isolated 'agent-state'
 $probe=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$probe.Start();$port=$probe.LocalEndpoint.Port;$probe.Stop()
@@ -60,6 +68,22 @@ try {
     & $agentManage -Action Restart | Out-Null
     & $agentManage -Action Stop | Out-Null
     & $controllerManage -Action Restart | Out-Null
+    # 배포 폴더 밖의 제품 저장소를 참조하지 않고 자체 fixture를 관측한다.
+    & $controllerManage -Action Start | Out-Null
+    & $agentManage -Action Start | Out-Null
+    $fixtureExe=Join-Path $isolated 'test-apps/FormsWorkbench/FormsWorkbench.exe'
+    $fixture=Start-Process -FilePath $fixtureExe -ArgumentList '--quiet' -WindowStyle Hidden -PassThru
+    try {
+        $null=$fixture.WaitForInputIdle(3000)
+        $scopeFile=Join-Path $isolated 'example-scope.json'
+        $scope=@(@{pid=$fixture.Id;createdAt=$fixture.StartTime.ToUniversalTime().ToString('O');imagePath=$fixtureExe;imageHash=(Get-FileHash -LiteralPath $fixtureExe -Algorithm SHA256).Hash.ToLowerInvariant()})
+        [IO.File]::WriteAllText($scopeFile,(ConvertTo-Json -InputObject $scope),[Text.UTF8Encoding]::new($false))
+        $exampleDll=Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $example) 'bin/Release') -Filter Inspect.dll -Recurse | Select-Object -First 1 -ExpandProperty FullName
+        & dotnet $exampleDll (Join-Path $controller 'Controller.json') package-smoke $scopeFile | Set-Content -LiteralPath (Join-Path $isolated 'sdk-example-result.jsonl') -Encoding UTF8
+        if($LASTEXITCODE -ne 0){throw 'Isolated SDK fixture observation failed'}
+    } finally {
+        if(-not $fixture.HasExited){Stop-Process -Id $fixture.Id -Force;$null=$fixture.WaitForExit(3000)}
+    }
     $backup=@(& $controllerManage -Action Backup)[-1]
     & $controllerManage -Action Restore -BackupDirectory $backup | Out-Null
     if(-not(Test-Path -LiteralPath (Join-Path $controllerState 'peers.json'))){throw 'Restore lost the saved registrations'}
@@ -71,7 +95,7 @@ try {
     if((Get-FileHash -LiteralPath (Join-Path $controllerState 'identity.pfx')).Hash -ne $identityHash){throw 'Incomplete restore changed identity'}
     & $controllerManage -Action Restore -BackupDirectory $emptyPeersBackup | Out-Null
     if(Test-Path -LiteralPath (Join-Path $controllerState 'peers.json')){throw 'Restore retained registrations absent from the backup'}
-    @{isolated=$isolated;roles=2;links='valid';manifestHashes='valid';lifecycle='valid';invalidInitialization='rejected';incompleteBackup='rejected';emptyRegistrationRestore='valid';desktopInput=$false} | ConvertTo-Json -Compress
+    @{isolated=$isolated;roles=2;links='valid';manifestHashes='valid';lifecycle='valid';invalidInitialization='rejected';incompleteBackup='rejected';emptyRegistrationRestore='valid';desktopInput=$false;sdkExample='compiled-and-observed-own-fixture'} | ConvertTo-Json -Compress
 } finally {
     & $agentManage -Action Stop | Out-Null
     & $controllerManage -Action Stop | Out-Null

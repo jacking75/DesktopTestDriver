@@ -1,0 +1,19 @@
+{
+  "profileVersion": 1,
+  "profileId": "forms-workbench",
+  "backend": "windows-uia",
+  "application": {
+    "executableBinding": "appExe",
+    "workingDirectoryBinding": "workDir",
+    "fingerprintBinding": "appFingerprint"
+  },
+  "targets": {
+    "editor": { "automationId": "Editor", "controlType": "Edit" },
+    "apply": { "automationId": "Apply", "controlType": "Button" }
+  },
+  "actions": {
+    "setEditor": { "target": "editor", "operation": "set-value" },
+    "applyEditor": { "target": "apply", "operation": "invoke" }
+  },
+  "backgroundQualificationRef": null
+}

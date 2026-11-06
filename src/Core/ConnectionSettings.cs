@@ -10,7 +10,7 @@ public sealed record ControllerSettings(string StateDirectory, string ListenAddr
     public string PipeName => "DesktopTestDriver-" + GuiProtocol.Hash(System.Text.Encoding.UTF8.GetBytes(WindowsIdentity.GetCurrent().User!.Value + Path.GetFullPath(StateDirectory).ToUpperInvariant()))[..24];
 }
 public sealed record AgentSettings(string StateDirectory, string MachineId, string ControllerHost, int ControllerPort,
-    string ControllerCertificate, int InteractiveSessionId = 0, int MaxHoldMilliseconds = 1500, int MaxStopMilliseconds = 3000);
+    string ControllerCertificate, int InteractiveSessionId = 0, int MaxHoldMilliseconds = 1500, int MaxStopMilliseconds = 3000, string MachineUsage = "shared");
 public sealed record PeerRegistration(string MachineId, string CertificateHash);
 public static class ConnectionSettings
 {
@@ -51,6 +51,6 @@ public static class ConnectionSettings
     }
     public static void Validate(AgentSettings c)
     {
-        if (!Path.IsPathFullyQualified(c.StateDirectory) || !GuiProtocol.Id(c.MachineId) || string.IsNullOrWhiteSpace(c.ControllerHost) || c.ControllerPort is < 1 or > 65535 || c.InteractiveSessionId < 0 || c.MaxHoldMilliseconds is < 100 or > 1500 || c.MaxStopMilliseconds is < 100 or > 3000 || c.ControllerCertificate is not { Length: 64 } || !c.ControllerCertificate.All(char.IsAsciiHexDigit)) throw new GuiException("InvalidConfiguration");
+        if (c.MachineUsage is not ("shared" or "dedicated") || !Path.IsPathFullyQualified(c.StateDirectory) || !GuiProtocol.Id(c.MachineId) || string.IsNullOrWhiteSpace(c.ControllerHost) || c.ControllerPort is < 1 or > 65535 || c.InteractiveSessionId < 0 || c.MaxHoldMilliseconds is < 100 or > 1500 || c.MaxStopMilliseconds is < 100 or > 3000 || c.ControllerCertificate is not { Length: 64 } || !c.ControllerCertificate.All(char.IsAsciiHexDigit)) throw new GuiException("InvalidConfiguration");
     }
 }

@@ -2,10 +2,16 @@ using System.Diagnostics;
 
 namespace DesktopTestDriver;
 
-public sealed record OwnedApplication(string ProcessId, string Session, DesktopProcess Identity, string Lifetime);
+public sealed record OwnedApplication(string ProcessId, string Session, DesktopProcess Identity, string Lifetime) { public string? JobName { get; init; } };
 public sealed record LaunchIntent(string ProcessId, string Session, string Lifetime, DesktopProcess? Identity = null);
 public sealed class GuiApplications(StateStore store)
 {
+    private readonly Dictionary<string, ApplicationJob> jobs = new();
+    public DesktopProcess[] Children(string session)
+    {
+        using var guard = store.Lock("applications.lock");
+        return Read().Where(a => a.Session == session && jobs.ContainsKey(a.ProcessId)).SelectMany(a => jobs[a.ProcessId].Members()).Distinct().ToArray();
+    }
     private OwnedApplication[] Read() => store.Exists("applications.json") ? store.Read<OwnedApplication[]>("applications.json") : [];
     public OwnedApplication[] List(string session) { using var guard = store.Lock("applications.lock"); return Read().Where(a => a.Session == session).ToArray(); }
     public string[] RetainedIds(string session)
@@ -14,7 +20,7 @@ public sealed class GuiApplications(StateStore store)
         return Read().Where(a => a.Session == session).Select(a => a.ProcessId).Concat(Directory.GetFiles(store.Root, "launch-intent-*.json")
             .Select(f => store.Read<LaunchIntent>(Path.GetFileName(f))).Where(i => i.Session == session).Select(i => i.ProcessId)).Distinct().ToArray();
     }
-    public OwnedApplication Launch(string session, string executable, string[] args, string lifetime)
+    public OwnedApplication Launch(string session, string executable, string[] args, string lifetime, string? workingDirectory = null)
     {
         if (!File.Exists(executable) || !executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new GuiException("InvalidExecutable");
         using var guard = store.Lock("applications.lock");
@@ -24,17 +30,18 @@ public sealed class GuiApplications(StateStore store)
         var processId = "process-" + Guid.NewGuid().ToString("N");
         var intentName = "launch-intent-" + processId + ".json";
         var intent = new LaunchIntent(processId, session, lifetime); store.Write(intentName, intent);
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable)! };
-        foreach (var arg in args) start.ArgumentList.Add(arg);
-        Process process;
-        try { process = Process.Start(start) ?? throw new GuiException("LaunchFailed"); }
+        SuspendedApplication suspended;
+        try { suspended = new(executable, args, workingDirectory ?? Path.GetDirectoryName(executable)!); }
         catch { File.Delete(store.PathFor(intentName)); throw; }
-        using var ownedProcess = process;
+        using var launch = suspended;
+        var process = suspended.Process;
         try
         {
-            var owned = new OwnedApplication(processId, session, Processes.Identify(process), lifetime);
+            ApplicationJob? job = null;
+            if (lifetime == "session") { job = new ApplicationJob(processId, process); jobs[processId] = job; }
+            var owned = new OwnedApplication(processId, session, Processes.Identify(process), lifetime) { JobName = job?.Name };
             store.Write(intentName, intent with { Identity = owned.Identity });
-            store.Write("applications.json", before.Append(owned).ToArray()); File.Delete(store.PathFor(intentName)); return owned;
+            store.Write("applications.json", before.Append(owned).ToArray()); suspended.Resume(); File.Delete(store.PathFor(intentName)); return owned;
         }
         catch { if (!process.HasExited) { process.Kill(); if (process.WaitForExit(500)) File.Delete(store.PathFor(intentName)); } else File.Delete(store.PathFor(intentName)); throw; }
     }
@@ -43,7 +50,21 @@ public sealed class GuiApplications(StateStore store)
         using var guard = store.Lock("applications.lock"); var owned = Read();
         if (processIds != null && processIds.Any(id => !owned.Any(a => a.ProcessId == id && a.Session == session))) throw new GuiException("ProcessNotOwned");
         var targets = owned.Where(a => a.Session == session && (processIds == null ? a.Lifetime == "session" : processIds.Contains(a.ProcessId))).ToArray();
-        var ended = targets.Where(a => Processes.KillOwned(a.Identity)).ToArray();
+        bool Stop(OwnedApplication application)
+        {
+            // Ask only the identified root to close. A dialog or hung app is bounded, then the owned job is stopped.
+            if (Processes.Alive(application.Identity))
+            {
+                using var root = Process.GetProcessById(application.Identity.Pid);
+                if (Processes.Identify(root) != application.Identity) return false;
+                if (root.CloseMainWindow()) root.WaitForExit(500);
+            }
+            if (application.JobName != null && !ApplicationJob.Stop(application.JobName)) return false;
+            var result = Processes.KillOwned(application.Identity);
+            if (jobs.Remove(application.ProcessId, out var job)) job.Dispose();
+            return result;
+        }
+        var ended = targets.Where(Stop).ToArray();
         store.Write("applications.json", owned.Except(ended).ToArray());
         bool intentsResolved = true;
         foreach (var file in Directory.GetFiles(store.Root, "launch-intent-*.json"))

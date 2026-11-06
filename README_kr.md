@@ -109,7 +109,7 @@ Agent는 원격 PC에 로그인한 일반 사용자의 콘솔 바탕화면에서
 
 ```powershell
 .\Controller.exe --status
-.\Controller.exe --session-open --machine remote-pc --mode control
+.\Controller.exe --session-open --machine remote-pc --mode control --interaction-policy foreground-exclusive
 ```
 
 응답의 `controlSessionId`를 아래 `REPLACE_SESSION_ID`에 넣어 `windows.json`으로 저장한다.
@@ -169,3 +169,7 @@ Agent는 원격 PC에 로그인한 일반 사용자의 콘솔 바탕화면에서
 ## 라이선스
 
 [MIT License](LICENSE)
+
+## API 2와 같은 머신·RDP 사용
+
+Controller와 Agent를 같은 PC에 함께 실행하거나, Controller에 원격 PC의 Agent를 연결한다. 새 Agent는 shared 정책이 기본이다. UIA는 앱 프로필과 실제 동작별 비간섭 인증을 거치며, 실제 키·마우스는 foreground-exclusive와 제한된 입력 lease가 필요하다. 활성 RDP 세션도 지원하며 연결 끊김·잠금 상태에서는 GUI 작업을 거부한다. API 1·2, stdin JSON, C# Client, 가상 목록·다중 창·소유 프로세스 정리의 사용법과 제한은 [실행 계약](docs/agent-usage.md)을 따른다. `bin/live_Release`에는 역할별 배포 폴더·Client·Schema·독립 예제·자체 테스트 앱을 포함한다.

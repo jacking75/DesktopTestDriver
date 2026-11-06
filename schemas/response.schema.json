@@ -1,0 +1,83 @@
+{
+  "type": [
+    "object",
+    "null"
+  ],
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "requestId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "controlSessionId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "data": {
+      "default": null
+    },
+    "error": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false,
+      "default": null
+    },
+    "inputEventsSent": {
+      "type": "integer",
+      "default": 0
+    },
+    "inputReleased": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "default": null
+    },
+    "apiVersion": {
+      "type": "integer"
+    },
+    "operation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "machineId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "status"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

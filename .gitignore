@@ -432,3 +432,4 @@ FodyWeavers.xsd
 .dotnet/
 private/
 artifacts/
+/docs_working/

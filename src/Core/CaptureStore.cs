@@ -9,11 +9,15 @@ public sealed class CaptureStore(StateStore store, IGuiDesktop desktop, WindowRe
     private readonly ConcurrentDictionary<string, StoredCapture> captures = new();
     public CaptureInfo Take(string windowId, CancellationToken cancellation)
     {
+        using var budget=store.Lock("capture-budget.lock");
+        var policy=store.Exists("evidence-policy.json")?store.Read<EvidencePolicy>("evidence-policy.json"):new EvidencePolicy();
+        EvidenceBudget.AdmitCapture(store,policy,0);
         var window = windows.Resolve(windowId); var bytes = desktop.Capture(window, cancellation);
         cancellation.ThrowIfCancellationRequested();
         var after = windows.Resolve(windowId);
         if (!WindowRegistry.Same(window, after) || after.Bounds != window.Bounds || after.Dpi != window.Dpi) throw new GuiException("StaleCapture");
         var id = "cap-" + Guid.NewGuid().ToString("N"); var name = id + ".png";
+        EvidenceBudget.AdmitCapture(store,policy,bytes.Length);
         using (var file = new FileStream(store.PathFor(name), FileMode.CreateNew, FileAccess.Write, FileShare.Read, 4096, FileOptions.WriteThrough)) { file.Write(bytes); file.Flush(true); }
         var now = DateTimeOffset.UtcNow;
         var info = new CaptureInfo(id, windowId, window.Bounds.Width, window.Bounds.Height, "window-client-pixels", now, now.AddSeconds(30), bytes.Length, GuiProtocol.Hash(bytes));

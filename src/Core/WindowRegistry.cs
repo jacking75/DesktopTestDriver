@@ -5,6 +5,7 @@ namespace DesktopTestDriver;
 public interface IGuiDesktop
 {
     DesktopWindow[] Windows();
+    DesktopWindow[] ScopedWindows(DesktopProcess[] scope) => Windows().Where(w => scope.Contains(w.Process)).ToArray();
     DesktopWindow Identify(long handle);
     DesktopElement[] Controls(DesktopWindow window, CancellationToken cancellation);
     byte[] Capture(DesktopWindow window, CancellationToken cancellation);
@@ -17,16 +18,22 @@ public sealed class WindowRegistry(IGuiDesktop desktop)
 {
     private readonly ConcurrentDictionary<string, DesktopWindow> windows = new();
     private readonly ConcurrentDictionary<string, (string Window, DesktopElement Element)> elements = new();
-    public PublicWindow[] List()
+    public PublicWindow[] List(DesktopProcess[]? scope = null)
     {
-        return desktop.Windows().Select(w =>
+        var selected = (scope == null ? desktop.Windows() : desktop.ScopedWindows(scope)).ToArray();
+        var ids = selected.ToDictionary(w => w.Handle, _ => "win-" + Guid.NewGuid().ToString("N"));
+        return selected.Select(w =>
         {
-            var match = windows.FirstOrDefault(p => Same(p.Value, w));
-            var id = match.Key ?? "win-" + Guid.NewGuid().ToString("N"); windows[id] = w;
-            return new PublicWindow(id, w.Title, w.Process.Pid, w.Process.CreatedAt, w.Process.ImagePath, w.Bounds, w.Foreground);
+            var id = ids[w.Handle]; windows[id] = w;
+            return new PublicWindow(id, w.Title, w.Process.Pid, w.Process.CreatedAt, w.Process.ImagePath, w.Bounds, w.Foreground) { ClassName = w.ClassName, OwnerWindowId = ids.GetValueOrDefault(w.OwnerHandle) };
         }).ToArray();
     }
     public static bool Same(DesktopWindow a, DesktopWindow b) => a.Handle == b.Handle && a.Process == b.Process && a.Generation == b.Generation;
+    public void Retire(string id)
+    {
+        windows.TryRemove(id,out _);
+        foreach(var element in elements.Where(e=>e.Value.Window==id).ToArray())elements.TryRemove(element.Key,out _);
+    }
     public DesktopWindow Resolve(string id)
     {
         if (!windows.TryGetValue(id, out var before)) throw new GuiException("WindowNotFound");

@@ -1,0 +1,37 @@
+{
+  "type": [
+    "array",
+    "null"
+  ],
+  "items": {
+    "type": [
+      "object",
+      "null"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "state": {
+        "type": "string"
+      },
+      "reason": {
+        "type": "string"
+      },
+      "nextAction": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "default": null
+      }
+    },
+    "required": [
+      "name",
+      "state",
+      "reason"
+    ],
+    "additionalProperties": false
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

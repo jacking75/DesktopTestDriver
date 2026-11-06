@@ -10,11 +10,8 @@ internal static class Program
         WindowsDesktop.EnableDpi(); var list = args.ToList(); var config = Path.Combine(AppContext.BaseDirectory, "Agent.json");
         if (list.Count >= 2 && list[0] == "--config") { config = Path.GetFullPath(list[1]); list.RemoveRange(0, 2); }
         var a = list.ToArray();
-        if (a is ["--help"]) { Console.WriteLine($"DesktopTestDriver Agent / GUI API 1\n--config FILE --serve | --stop\n--config NEW_FILE --initialize STATE MACHINE HOST PORT CONTROLLER.cer\nInternal: --watchdog STATE | --uia HWND\nUsage: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}"); return 0; }
-        if (a is ["--watchdog", var root]) return await WatchdogRunner.Run(root);
-        if (a is ["--uia", var hwnd]) { var elements = await Task.Run(() => WindowsDesktop.ReadControls(long.Parse(hwnd, System.Globalization.CultureInfo.InvariantCulture))); Console.WriteLine(GuiProtocol.Encode(elements)); return 0; }
-        if (a is ["--capture", var captureHandle, var capturePid, var captureStart, var captureOutput, var cx, var cy, var cw, var ch]) { await GraphicsCapture.Save(long.Parse(captureHandle, System.Globalization.CultureInfo.InvariantCulture), int.Parse(capturePid, System.Globalization.CultureInfo.InvariantCulture), long.Parse(captureStart, System.Globalization.CultureInfo.InvariantCulture), new(int.Parse(cx, System.Globalization.CultureInfo.InvariantCulture), int.Parse(cy, System.Globalization.CultureInfo.InvariantCulture), int.Parse(cw, System.Globalization.CultureInfo.InvariantCulture), int.Parse(ch, System.Globalization.CultureInfo.InvariantCulture)), captureOutput); return 0; }
-        if (a is ["--focus", var focusHandle, var focusPid, var focusStart]) return WindowsDesktop.ActivateWindow(long.Parse(focusHandle, System.Globalization.CultureInfo.InvariantCulture), int.Parse(focusPid, System.Globalization.CultureInfo.InvariantCulture), long.Parse(focusStart, System.Globalization.CultureInfo.InvariantCulture)) ? 0 : 1;
+        if (a is ["--help"]) { Console.WriteLine($"DesktopTestDriver Agent / GUI API 1/2\n--environment | --config FILE --serve | --stop\n--config NEW_FILE --initialize STATE MACHINE HOST PORT CONTROLLER.cer\nInternal: --watchdog STATE | --uia HWND\nUsage: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}"); return 0; }
+        var internalExit=await InternalDesktopCommands.TryRun(a); if(internalExit.HasValue) return internalExit.Value;
         if (a is ["--initialize", var state, var machine, var host, var port, var controllerCert])
         {
             if (File.Exists(config)) throw new GuiException("ConfigurationExists"); using var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificateFromFile(controllerCert);
@@ -22,7 +19,22 @@ internal static class Program
             var store = new StateStore(settings.StateDirectory); ConnectionSettings.Initialize(store, machine);
             File.WriteAllText(config, GuiProtocol.Encode(settings)); Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed", Data: new { configuration = config, publicCertificate = store.PathFor("identity.cer") }))); return 0;
         }
+        if(a is ["--environment"])
+        {
+            using var process=Process.GetCurrentProcess();using var environment=new WindowsDesktop(process.SessionId,Environment.ProcessPath!,Path.GetTempPath());
+            Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed",Data:new {valid=environment.Valid,sessionId=process.SessionId,sessionKind=WindowsDesktop.SessionKind(process.SessionId),desktop=environment.Valid?"Default":"unavailable"})));return 0;
+        }
         var c = ConnectionSettings.Agent(config); var stateStore = new StateStore(c.StateDirectory);
+        if (a is ["--register-profile", var profileFile, var bindingsFile])
+        {
+            var registered = new ProfileRegistry(stateStore).Register(File.ReadAllText(profileFile), GuiProtocol.Decode<MachineBindings>(File.ReadAllText(bindingsFile)));
+            Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed", Data: new { profileId = registered.Profile.ProfileId, registered.ProfileHash }))); return 0;
+        }
+        if (a is ["--qualify-profile", var qualificationFile])
+        {
+            new ProfileRegistry(stateStore).Qualify(GuiProtocol.Decode<BackgroundQualification>(File.ReadAllText(qualificationFile)));
+            Console.WriteLine(GuiProtocol.Encode(new GuiResponse("completed"))); return 0;
+        }
         if (a is ["--stop"]) { var identity = stateStore.Read<DesktopProcess>("agent-process.json"); if (!Processes.Alive(identity)) throw new GuiException("AgentUnavailable"); stateStore.Write("agent-stop.json", identity); return 0; }
         if (!(a.Length == 0 || a is ["--serve"])) throw new GuiException("InvalidCommand");
         using var current = Process.GetCurrentProcess(); var session = c.InteractiveSessionId == 0 ? current.SessionId : c.InteractiveSessionId; c = c with { InteractiveSessionId = session };

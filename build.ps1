@@ -33,12 +33,21 @@ try {
    foreach($document in ($documents+$assets)){$to=Join-Path $destination $document;New-Item -ItemType Directory -Path (Split-Path -Parent $to) -Force | Out-Null;Copy-Item -LiteralPath (Join-Path $PSScriptRoot $document) -Destination $to}
    New-Item -ItemType Directory -Path (Join-Path $destination 'scripts') -Force | Out-Null
    Copy-Item -LiteralPath scripts/manage.ps1 -Destination (Join-Path $destination 'scripts/manage.ps1')
+   Copy-Item -LiteralPath scripts/Test-DesktopEnvironment.ps1 -Destination (Join-Path $destination 'scripts/Test-DesktopEnvironment.ps1')
+   foreach($content in @('schemas','examples/standalone')){
+    $contentTarget=Join-Path $destination $content
+    New-Item -ItemType Directory -Path $contentTarget -Force | Out-Null
+    foreach($item in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot $content) -File){Copy-Item -LiteralPath $item.FullName -Destination $contentTarget}
+   }
+   Copy-Item -LiteralPath (Join-Path $PSScriptRoot ('bin/'+$Configuration+'/Client/Client.dll')) -Destination $destination
    Copy-Item -LiteralPath LICENSE -Destination $destination
    $manifest=Join-Path $destination 'package-manifest.json'
    $files=@(Get-ChildItem -LiteralPath $destination -Recurse -File | Where-Object {$_.FullName -ne $manifest} | Sort-Object FullName | ForEach-Object {@{path=$_.FullName.Substring($destination.Length+1).Replace('\','/');bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
-   @{version='0.3.0';apiVersion=1;role=$role;configuration=$Configuration;sourceRevision=(git rev-parse HEAD);workingTreeDirty=([bool](git status --porcelain));files=$files} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifest -Encoding UTF8
+   @{version='0.3.0';apiVersion=1;supportedApiVersions=@(1,2);wireVersion=2;role=$role;configuration=$Configuration;sourceRevision=(git rev-parse HEAD);workingTreeDirty=([bool](git status --porcelain));files=$files} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifest -Encoding UTF8
   }
-  foreach($fixture in @('SimpleMemo','InputWindow')){
+  dotnet publish src/Client/Client.csproj -c $Configuration -r win-x64 --no-restore --self-contained false -o (Join-Path $target 'Client') --nologo
+  if($LASTEXITCODE -ne 0){throw 'Client publish failed'}
+  foreach($fixture in @('SimpleMemo','InputWindow','FormsWorkbench')){
    dotnet publish "fixtures/$fixture/$fixture.csproj" -c $Configuration -r win-x64 --no-restore --self-contained false -o (Join-Path $target "test-apps/$fixture") --nologo
    if($LASTEXITCODE -ne 0){throw "Fixture publish failed: $fixture"}
   }

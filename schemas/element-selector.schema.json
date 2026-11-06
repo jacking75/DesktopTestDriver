@@ -1,0 +1,108 @@
+{
+  "type": [
+    "object",
+    "null"
+  ],
+  "properties": {
+    "automationId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "controlType": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "className": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "frameworkId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "ancestorAutomationId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "parent": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "automationId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "controlType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "className": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "frameworkId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "ancestorAutomationId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "parent": {
+          "$ref": "#/properties/parent",
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "default": null
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

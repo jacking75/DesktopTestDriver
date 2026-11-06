@@ -1,21 +1,48 @@
 using System.Diagnostics;
 using System.Text.Json;
 using DesktopTestDriver;
-if (args is ["--watchdog", var root]) return await WatchdogRunner.Run(root);
+WindowsDesktop.EnableDpi();
+if (args is ["--uia-worker",var testPipe,var testParent,var testStart] && Environment.GetEnvironmentVariable("DTD_TEST_WORKER_HANG") is string testIdentityFile)
+{
+    File.WriteAllText(testIdentityFile,GuiProtocol.Encode(Processes.Identify(Process.GetCurrentProcess())));
+    var token=Console.ReadLine()!;
+    using var pipe=new System.IO.Pipes.NamedPipeClientStream(".",testPipe,System.IO.Pipes.PipeDirection.InOut,System.IO.Pipes.PipeOptions.CurrentUserOnly|System.IO.Pipes.PipeOptions.Asynchronous);
+    await pipe.ConnectAsync(3000); await GuiWire.Write(pipe,token,CancellationToken.None);
+    _=await GuiWire.Read<UiaCommand>(pipe,CancellationToken.None); await Task.Delay(30000); return 0;
+}
+if(args is ["--spawn-owned-child",var childFile])
+{
+    using var child=Processes.Start(Environment.ProcessPath!,"--sleeper");
+    new StateStore(Path.GetDirectoryName(childFile)!).Write(Path.GetFileName(childFile),Processes.Identify(child)); await Task.Delay(30000); return 0;
+}
+var internalExit=await InternalDesktopCommands.TryRun(args); if(internalExit.HasValue) return internalExit.Value;
+if(args is ["--environment"])
+{
+    using var current=Process.GetCurrentProcess();using var environment=new WindowsDesktop(current.SessionId,Environment.ProcessPath!,Path.GetTempPath());
+    Console.WriteLine(GuiProtocol.Encode(new{session=current.SessionId,kind=WindowsDesktop.SessionKind(current.SessionId),valid=environment.Valid}));return 0;
+}
+if(args is ["--automation-flow-tests"]) { await AutomationFlowTests.Run(); return 0; }
+if (args is ["--physical-input"]) return await PhysicalTests.Run();
+if(args is ["--concurrent-ui"]) return await DesktopAcceptanceTests.Run(true);
+if(args is ["--compare-input"]) return await DesktopAcceptanceTests.Run(false);
+if(args is ["--window-tests"]) return await WindowUiTests.Run();
+if(args is ["--virtual-tests"]) return await VirtualUiTests.Run();
+if (args is ["--ui-tests"]) return await UiIntegrationTests.Run();
 if (args is ["--sleeper"]) { await Task.Delay(30000); return 0; }
+if(args.Length>0) return 1;
 int passed = 0;
 void Check(bool condition, string message = "assertion failed") { if (!condition) throw new Exception(message); }
 async Task Test(string name, Func<Task> body) { await body(); passed++; Console.WriteLine("PASS " + name); }
 string Root() => Path.GetFullPath(Path.Combine("artifacts", "local-tests", Guid.NewGuid().ToString("N")));
 GuiRequest Req(string session, string op, object arguments, string? id = null, int ms = 5000) => GuiProtocol.Parse(GuiProtocol.Encode(new { apiVersion = 1, requestId = id ?? "r-" + Guid.NewGuid().ToString("N"), controlSessionId = session, operation = op, timeoutMilliseconds = ms, arguments }));
 void Reject(string json) { try { GuiProtocol.Parse(json); throw new Exception("invalid request accepted"); } catch (Exception e) when (e is GuiException or JsonException or InvalidOperationException or KeyNotFoundException) { } }
-(StateStore Store, FakeDesktop Desktop, FakeInput Input, GuiInput Owned, ControlSessions Sessions, GuiRequestHandler Handler, SessionInfo Session) Context(int stop = 3000) { var store = new StateStore(Root()); var desktop = new FakeDesktop(); var input = new FakeInput(); var owned = new GuiInput(store, input); var sessions = new ControlSessions(store, "test", 1); var session = sessions.Open("control", 900); return (store, desktop, input, owned, sessions, new(store, desktop, sessions, owned, stop), session); }
+(StateStore Store, FakeDesktop Desktop, FakeInput Input, GuiInput Owned, ControlSessions Sessions, GuiRequestHandler Handler, SessionInfo Session) Context(int stop = 3000) { var store = new StateStore(Root()); var desktop = new FakeDesktop(); var input = new FakeInput(); var owned = new GuiInput(store, input); var sessions = new ControlSessions(store, "test", 1, "dedicated"); var session = sessions.Open("control", 900); return (store, desktop, input, owned, sessions, new(store, desktop, sessions, owned, stop, "dedicated"), session); }
 async Task<string> Window(GuiRequestHandler handler, string sid) { var result = await handler.Execute(new(Req(sid, "windows", new { }), 5000)); Check(result.Status == "completed"); return JsonSerializer.SerializeToElement(result.Data, GuiProtocol.Json).GetProperty("windows")[0].GetProperty("windowId").GetString()!; }
 await Test("G01 strict contract and canonical duplicate identity", () =>
 {
     var sample = """{"apiVersion":1,"requestId":"one","controlSessionId":"session","operation":"windows","arguments":{}}""";
     Check(GuiProtocol.Fingerprint(GuiProtocol.Parse(sample)) == GuiProtocol.Fingerprint(GuiProtocol.Parse("""{"arguments":{},"operation":"windows","controlSessionId":"session","requestId":"one","timeoutMilliseconds":5000,"apiVersion":1}""")));
-    Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":1,\"apiVersion\":1")); Reject(sample.Replace("windows", "scenario")); Reject(sample.Replace("{}", "{\"extra\":1}")); Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":2")); Reject(sample.Replace("{}", "null")); return Task.CompletedTask;
+    Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":1,\"apiVersion\":1")); Reject(sample.Replace("windows", "scenario")); Reject(sample.Replace("{}", "{\"extra\":1}")); Reject(sample.Replace("\"apiVersion\":1", "\"apiVersion\":3")); Reject(sample.Replace("{}", "null")); return Task.CompletedTask;
 });
 await Test("G01 function-key aliases cannot cause partial chord injection", () =>
 {
@@ -165,6 +192,35 @@ await Test("G14 real process ownership, keep/session separation", () =>
     finally { Processes.KillOwned(keep.Identity); Processes.KillOwned(scoped.Identity); if (!unrelated.HasExited) unrelated.Kill(); }
     return Task.CompletedTask;
 });
+await Test("S12 owned job contains child from first instruction and confirms group termination", async () =>
+{
+    var store=new StateStore(Root()); var apps=new GuiApplications(store); var marker=store.PathFor("child.json");
+    var app=apps.Launch("session",Environment.ProcessPath!,["--spawn-owned-child",marker],"session");
+    DesktopProcess? child=null;
+    try
+    {
+        var began=Stopwatch.GetTimestamp(); while(!File.Exists(marker) && Stopwatch.GetElapsedTime(began).TotalSeconds<3) await Task.Delay(20);
+        Check(File.Exists(marker),"child did not start"); child=GuiProtocol.Decode<DesktopProcess>(File.ReadAllText(marker));
+        Check(apps.Children("session").Contains(child));
+        Check(apps.Terminate("session") && !Processes.Alive(app.Identity) && !Processes.Alive(child),"owned child remains");
+    }
+    finally {apps.Terminate("session"); if(child!=null) Processes.KillOwned(child); Processes.KillOwned(app.Identity);}
+});
+await Test("S08 hung MTA helper is killed at the caller deadline", () =>
+{
+    var store=new StateStore(Root()); var marker=store.PathFor("worker.json"); DesktopProcess? helper=null;
+    var old=Environment.GetEnvironmentVariable("DTD_TEST_WORKER_HANG"); Environment.SetEnvironmentVariable("DTD_TEST_WORKER_HANG",marker);
+    try
+    {
+        using var startup=new CancellationTokenSource(3000); using var worker=new UiaWorker(Environment.ProcessPath!,startup.Token);
+        helper=GuiProtocol.Decode<DesktopProcess>(File.ReadAllText(marker));
+        using var deadline=new CancellationTokenSource(100); var began=Stopwatch.GetTimestamp();
+        try {worker.Call(new(new FakeDesktop().Current,"inspect"),deadline.Token);throw new Exception("hung provider returned");} catch(OperationCanceledException){}
+        Check(Stopwatch.GetElapsedTime(began).TotalMilliseconds<1700 && !Processes.Alive(helper),"helper stop unconfirmed");
+    }
+    finally {Environment.SetEnvironmentVariable("DTD_TEST_WORKER_HANG",old);if(helper!=null) Processes.KillOwned(helper);}
+    return Task.CompletedTask;
+});
 await Test("G15 independent watchdog stops owned producer, preserves keep app", async () =>
 {
     var store = new StateStore(Root()); var apps = new GuiApplications(store); var keep = apps.Launch("session", Environment.ProcessPath!, ["--sleeper"], "keep"); var scoped = apps.Launch("session", Environment.ProcessPath!, ["--sleeper"], "session"); using var producer = Processes.Start(Environment.ProcessPath!, "--sleeper");
@@ -220,6 +276,9 @@ await Test("G20 regression: sustained Unicode cannot starve input maintenance", 
     finally { finished.Cancel(); await maintenance; }
     Check(observations > 0 && reader.Empty("session") && backend.Events.Count == 1024);
 });
+passed += await AutomationTests.Run();
+passed += await AutomationFlowTests.Run();
+passed += ProfileTests.Run();
 passed += await IntegrationTests.Run();
 Console.WriteLine(GuiProtocol.Encode(new { passed, realDesktopInput = false, twoPhysicalMachines = false })); return 0;
 sealed class FakeInput : IInputBackend

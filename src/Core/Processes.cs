@@ -1,8 +1,12 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 namespace DesktopTestDriver;
 
 public static class Processes
 {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    private static extern bool QueryFullProcessImageName(IntPtr process,int flags,StringBuilder path,ref int size);
     public static DesktopProcess Identify(Process process)
     {
         // A newly spawned process can exist before its main module becomes queryable.
@@ -10,8 +14,12 @@ public static class Processes
         do
         {
             process.Refresh();
-            var path = process.MainModule?.FileName;
-            if (path != null) return new(process.Id, process.StartTime.ToUniversalTime(), Path.GetFullPath(path), GuiProtocol.Hash(File.ReadAllBytes(path)));
+            var buffer=new StringBuilder(32768); var size=buffer.Capacity;
+            if (QueryFullProcessImageName(process.Handle,0,buffer,ref size))
+            {
+                var path=Path.GetFullPath(buffer.ToString());
+                return new(process.Id, process.StartTime.ToUniversalTime(), path, GuiProtocol.Hash(File.ReadAllBytes(path)));
+            }
             if (process.HasExited) break;
             Thread.Sleep(5);
         } while (Stopwatch.GetElapsedTime(began).TotalMilliseconds < 500);

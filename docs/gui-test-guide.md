@@ -50,7 +50,7 @@
 ## 4. 테스트 PC를 조작할 연결을 연다
 
 ```powershell
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --session-open --machine test-pc --mode control
+& 'C:\DesktopTestDriver\Controller\Controller.exe' --session-open --machine test-pc --mode control --interaction-policy foreground-exclusive
 ```
 
 이 명령으로 연 연결을 ‘제어 세션’이라고 부른다. 응답으로 받은 세션 번호를 이후 요청에 넣는다. 이 번호 덕분에 여러 명령이 같은 테스트 PC를 대상으로 이어진다.

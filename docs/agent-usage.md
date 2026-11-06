@@ -2,6 +2,42 @@
 
 이 문서는 Controller.exe로 Windows PC의 GUI를 관측·조작하는 코딩 에이전트용 API 1 사용법이다.
 
+## API 2 개발 상태와 같은 PC에서의 실행
+
+Controller와 Agent는 같은 Windows PC에서도 함께 실행할 수 있다. Agent의 machineId를 로컬 PC 식별자로 등록하고 Controller의 주소를 `127.0.0.1`로 사용한다. 인증서 등록·대상 프로세스 신원·세션 정책은 원격 구성과 동일하게 적용한다. 같은 PC라는 이유로 입력 보호를 해제하지 않는다.
+
+API 1과 API 2를 함께 지원한다. Controller와 Agent는 wire 2 빌드를 함께 배포한다. API 1의 클릭·키 입력 의미는 유지하며 UIA로 몰래 바꾸지 않는다. `machineUsage` 기본값은 `shared`이다. 공유 화면에서는 기본적으로 전역 입력을 거부하고, 동작별 비간섭 측정을 등록한 프로필에 한해 UIA 의미 조작을 허용한다. 실제 키·마우스 입력에는 `foreground-exclusive`를 명시하며 30초 lease와 사용자 활동 감지를 적용한다. 전용 테스트 환경에는 `dedicated`와 `isolated-desktop`을 사용할 수 있다.
+
+Agent는 로그인한 일반 사용자의 **활성 콘솔 또는 활성 RDP 세션**에서 실행한다. Controller와 Agent는 같은 머신에서도 동작한다. RDP는 Agent가 실행되는 사용자 세션에 계속 연결돼 있어야 하며, 연결 끊김·잠금·보안 데스크톱·관리자 실행은 거부한다. `--doctor`의 `sessionKind`, `desktop`, `inputAvailable`로 현재 상태를 확인한다.
+
+```powershell
+Controller.exe --doctor --machine local-test
+Controller.exe --profile-validate examples/standalone/forms.profile.json
+# scope.json은 실제 PID·시작 시각·EXE 경로·SHA-256의 DesktopProcess 배열이다.
+Controller.exe --session-open --machine local-test --api-version 2 --mode observe --target-scope scope.json
+Controller.exe --inspect --session CONTROL_ID --window WINDOW_ID
+Controller.exe --session-close CONTROL_ID
+```
+
+앱 프로필의 `application`에는 기계별 경로를 직접 넣지 않고 binding 이름을 지정한다. Agent의 `--register-profile PROFILE.json BINDINGS.json`은 EXE·관리 DLL 해시와 작업 폴더를 검증한다. `--qualify-profile QUALIFICATION.json`은 프로필·바이너리·OS·측정 시각·증거 해시·허용 동작을 연결한다. 전역 입력 또는 대상 창 전경 전환이 있던 증거는 인증하지 않는다. 바이너리·프로필·OS·증거 변경이나 인증 만료는 신규 mutation을 차단한다. 인증된 프로필도 실행 직전에 대상 신원·요소 snapshot·패턴·disabled 상태와 대상 앱 활동을 다시 검사한다.
+
+| 기능 | 지원 범위와 제한 |
+|---|---|
+| 대상 범위 | PID·시작 시각·경로·해시를 확인한다. API 2의 빈 scope는 다른 앱을 열거하지 않는다. 새 창은 같은 소유 프로세스 또는 허용된 Job 자식 관계로 검증한다. |
+| 요소 선택 | ID·정확한 type/name/class/framework·부모/조상 조건을 지원한다. 중복과 불완전 탐색을 성공으로 처리하지 않는다. 암호·제외 필드는 반환하지 않는다. |
+| UIA | 세션별 MTA 헬퍼와 사용자 전용 인증 파이프를 사용한다. Value/Invoke/선택/토글/확장/스크롤은 네이티브 UIA3로 호출한다. 미지원 패턴에서 키·마우스로 대체하지 않는다. |
+| 가상 목록 | inspect의 컨테이너 ID와 snapshot으로 `find-item`을 요청한다. 가상 목록은 불완전 관측으로 표시한다. Realize/Scroll은 별도 mutation이며 자동으로 실행하지 않는다. |
+| 창·대화상자 | owner·class·title로 창을 찾고 기다린다. 모달·파일 대화상자는 활성화할 수 있어 기본 공유 화면 인증에 포함하지 않는다. |
+| 앱 수명 | attach한 앱은 종료 소유권을 얻지 않는다. session launch는 시작 전 원장과 suspended Job 편입으로 자식을 포함한다. 정상 닫기 후 필요하면 소유 Job을 종료하고 멤버 0을 확인한다. keep 앱은 유지한다. |
+| 실제 측정 | 기본 WinForms/WPF Value와 WinForms Invoke는 전역 입력 0·전경 전환 0으로 확인했다. 다중 창·가려진 창·동적 교체·WPF 가상 목록도 별도 검증했다. 모든 앱과 모든 동작의 비간섭을 보장하지 않는다. |
+| 제품 연결 | Core는 제품 API를 참조하지 않는다. 회의예약의 어댑터·스킬·실행기는 해당 제품 저장소에 둔다. |
+
+`--request-stdin`은 EOF로 끝난 JSON 요청 하나를 읽고 stdout에 결과 JSON 하나를 반환한다. `examples/standalone/Inspect.ps1`, `Inspect.cs`는 관측과 세션 정리를 보여준다. 배포 폴더의 Client.dll·Core.dll·Contracts.dll로 C# 예제를 독립 빌드할 수 있다. `schemas/`는 DTO 구조 Schema이며 의미·길이·범위의 최종 검사는 런타임 parser가 수행한다.
+
+`completionUnknown` mutation은 자동 재전송하지 않는다. Agent는 세션을 중단하고 읽기와 정리만 허용한다. `--request-status`로 원래 요청을 확인한다. `--session-reconcile ID --request-id REQUEST --resolution effect-confirmed|no-effect-confirmed|abandoned --evidence-ref OPAQUE_ID --expected-revision N`은 호출자 근거를 별도로 남기며 원래 unknown을 보존한다. 이후 `--session-resume ID --expected-revision N`을 명시적으로 요청한다. SDK의 대기 취소도 실행 취소나 무효과를 뜻하지 않는다.
+
+실제 GUI 접근은 DesktopTestDriver만으로 수행한다. 다른 컴퓨터 유스 도구로 클릭·입력·요소 조회를 대체해 이 도구의 통과로 보고하지 않는다. 테스트 전에 사용자에게 알리고, 시작한 앱·Agent·Controller를 테스트 종료 시 정리한다. 프로세스·포트·입력 해제·콜백·업무 결과는 각각 확인한다.
+
 사용 전에 Controller.exe의 실제 경로, 대상 PC 정보, 수행할 작업을 확인한다. Controller와 대상 PC의 Agent가 기동·연결되어 있어야 한다. 최초 설정이 필요하면 [최초 설정과 상주 실행](#최초-설정과-상주-실행)을 따른다.
 
 ## 먼저 알아야 할 실행 방식
@@ -10,7 +46,7 @@
 - Controller.exe는 코딩 에이전트와 같은 머신에서 실행된다. 명령 진입점이 같은 머신의 상주 Controller에 요청하고, 상주 Controller가 연결된 Agent에 전달한다.
 - Agent.exe는 대상 Windows PC의 로그인된 데스크톱에서 계속 실행하며 실제 GUI 관측·입력을 수행한다. 개별 Controller 명령 프로세스 종료는 상주 Controller·Agent·제어 세션의 종료가 아니다.
 - 제어 세션은 여러 명령을 이어서 조작하는 문맥이다. 시험 순서·성공 조건을 담지 않는다.
-- Agent는 대상 PC의 활성 콘솔·일반 사용자 바탕화면에서 실행한다. 로그인 세션·UAC·잠금·RDP 지원 여부를 추정하지 않고 --status의 결과를 따른다.
+- Agent는 대상 PC의 활성 콘솔 또는 활성 RDP 일반 사용자 바탕화면에서 실행한다. 잠금·연결 끊김·UAC 보안 화면에서는 중단하고 --doctor 결과를 따른다.
 
 대상 PC는 작업 PC 자체와 원격 PC를 모두 포함한다. 작업 PC의 GUI도 조작하려면 그 PC에 Agent를 함께 실행한다. 여러 PC를 사용할 때는 PC별로 조작 세션과 관측 전용 세션을 선택한다. 원격 파일 작업에는 기존 SSH를 사용하고 작업 PC의 파일 작업에는 일반 로컬 명령을 사용한다.
 
@@ -25,7 +61,7 @@
 | `Controller.exe --help` | 사용법, API 버전, 동봉된 사용 문서 경로 표시 |
 | `Controller.exe --status` | 연결된 Agent의 machineId·연결·세션 목록 조회 |
 | `Controller.exe --status --machine TARGET` | 특정 Agent의 데스크톱·지원 작업·제한 조회 |
-| `Controller.exe --session-open --machine TARGET --mode control --idle-seconds 900` | 입력 가능한 제어 세션 생성 |
+| `Controller.exe --session-open --machine TARGET --mode control --interaction-policy foreground-exclusive --idle-seconds 900` | 입력 가능한 제어 세션 생성 |
 | `Controller.exe --session-open --machine TARGET --mode observe --idle-seconds 900` | 입력 없는 관측 세션 생성 |
 | `Controller.exe --session-status CONTROL_ID` | 세션 상태·유휴 만료·입력 해제 상태 조회 |
 | `Controller.exe --session-status` | 현재 계정의 세션 목록 조회. 세션 생성 응답 유실 시 사용 |
@@ -314,11 +350,11 @@ launch의 executable은 대상 Agent PC의 실행 파일 절대 경로, argument
 
 Agent 시작은 로그인한 일반 사용자의 바탕화면에서 수행한다. SSH 프로세스 시작만으로 GUI 실행 성공을 주장하지 않는다. SSH로 배치할 때는 현장에서 시작하거나 `-Action InstallLogonTask`로 현재 사용자의 대화형 로그온 작업을 준비한다. 이 작업은 사용자가 로그인할 때만 제한된 권한으로 시작한다. `RemoveLogonTask`는 같은 설정 경로로 생성한 작업만 제거한다. 다른 예약 작업·서비스를 건드리지 않는다. 현재 세션이 없거나 관리자 실행이면 Agent는 `NoInteractiveSession`을 반환한다.
 
-Controller.json은 `stateDirectory`, `listenAddress`, `port`를 사용한다. Agent.json은 `stateDirectory`, `machineId`, `controllerHost`, `controllerPort`, `controllerCertificate`(등록한 공개 인증서의 SHA-256), `interactiveSessionId`(0이면 시작한 콘솔 세션), `maxHoldMilliseconds`(기본·최대 1500), `maxStopMilliseconds`(기본·최대 3000)를 사용한다. 기본 배포 JSON은 설정 예시이며 Initialize로 실제 상태 경로와 인증서를 생성해야 한다. `Controller.exe --config FILE --status`처럼 별도 설정을 쓸 수도 있다. `--config FILE`은 첫 옵션으로 지정한다.
+Controller.json은 `stateDirectory`, `listenAddress`, `port`를 사용한다. Agent.json은 `stateDirectory`, `machineId`, `controllerHost`, `controllerPort`, `controllerCertificate`(등록한 공개 인증서의 SHA-256), `interactiveSessionId`(0이면 시작한 사용자 세션), `maxHoldMilliseconds`(기본·최대 1500), `maxStopMilliseconds`(기본·최대 3000)를 사용한다. 기본 배포 JSON은 설정 예시이며 Initialize로 실제 상태 경로와 인증서를 생성해야 한다. `Controller.exe --config FILE --status`처럼 별도 설정을 쓸 수도 있다. `--config FILE`은 첫 옵션으로 지정한다.
 
 설정·인증서 갱신 전에는 `-Action Backup`을 사용한다. 프로그램을 중단하고 비공개 상태 폴더 안의 새 backup 폴더에 설정과 인증서·등록 정보를 보존한다. `-Action Restore -BackupDirectory ...`는 필수 인증서 파일을 확인하고 프로그램을 중단한 뒤 이 정보를 복원한다. 백업에 peers.json이 없으면 등록이 없던 상태로 복원하므로 이후 추가한 등록도 제거한다. 기존 요청 기록·세션을 지워 재실행을 허용하지 않는다. 복원 뒤 Start는 명시적으로 수행한다. 보관 기록과 개인키는 현재 사용자 권한으로 유지한다.
 
-Controller 상태 폴더에는 공개 최종 응답 `request-*.json`과 세션 기록을, Agent 상태 폴더에는 실제 실행 결과·`held-input.json`·`applications.json`·원본 PNG를 보관한다. 중간 수락·실행 결과는 일반 로그가 아닌 이 제한된 저장소에 남는다. 결과는 최소 24시간 보관하며 자동 삭제하지 않는다. 용량 부족 시 수락 기록을 기록하지 못하면 새 입력을 시작하지 않는다. 작업 PC에 저장한 최종 PNG의 보관은 호출자가 관리한다.
+Controller 상태 폴더에는 공개 최종 응답 `request-*.json`과 세션 기록을, Agent 상태 폴더에는 실제 실행 결과·`held-input.json`·`applications.json`·원본 PNG를 보관한다. 중간 수락·실행 결과는 일반 로그가 아닌 이 제한된 저장소에 남는다. 일반 최종 저널은 기본 24시간이 지난 뒤 새 mutation을 수락할 때 정리할 수 있다. unknown 원본은 보존한다. API 2 저널 내용은 현재 사용자 DPAPI로 암호화한다. 기본 한도는 저널 64MiB·원본 캡처 256MiB이며, 한도 도달 시 신규 mutation/캡처를 거부한다. 캡처를 임의 삭제해 공간을 확보하지 않는다. 용량 부족 시 수락 기록을 기록하지 못하면 새 입력을 시작하지 않는다. 작업 PC에 저장한 최종 PNG의 보관은 호출자가 관리한다.
 
 캡처는 대상 창의 클라이언트 표면을 1:1로 얻으며 출력은 SDR PNG다. HDR 원본의 색 정확도는 보장하지 않는다. 다른 앱의 픽셀이나 Windows 필기용 마우스 통과 레이어를 이미지에 합성하지 않는다. 일반 불투명 창의 가림·최소화·숨김·모니터 밖 상태는 거부하며 창을 몰래 앞으로 가져오지 않는다. 캡처 알림 테두리가 잠시 나타날 수 있다. 캡처 대기 한도는 2200ms이며 원래 요청의 남은 시간도 함께 적용한다.
 

@@ -23,8 +23,8 @@ static class IntegrationTests
         var aStore = new StateStore(Path.Combine(root, "a")); ConnectionSettings.Initialize(aStore, "A");
         var bStore = new StateStore(Path.Combine(root, "b")); ConnectionSettings.Initialize(bStore, "B");
         ConnectionSettings.Register(controllerStore, "A", aStore.PathFor("identity.cer")); ConnectionSettings.Register(controllerStore, "B", bStore.PathFor("identity.cer"));
-        var a = new AgentSettings(aStore.Root, "A", "127.0.0.1", port, ConnectionSettings.Hash(controllerCert), 1);
-        var b = new AgentSettings(bStore.Root, "B", "127.0.0.1", port, ConnectionSettings.Hash(controllerCert), 1);
+        var a = new AgentSettings(aStore.Root, "A", "127.0.0.1", port, ConnectionSettings.Hash(controllerCert), 1, MachineUsage: "dedicated");
+        var b = new AgentSettings(bStore.Root, "B", "127.0.0.1", port, ConnectionSettings.Hash(controllerCert), 1, MachineUsage: "dedicated");
         var desktopA = new FakeDesktop(); var desktopB = new FakeDesktop(); var inputA = new FakeInput(); var inputB = new FakeInput();
         using var stopController = new CancellationTokenSource(); using var stopAgents = new CancellationTokenSource();
         var hosting = Task.Run(() => new ControllerHost(controller).Run(stopController.Token));
@@ -44,16 +44,27 @@ static class IntegrationTests
             await Wait(async () => { var status = await Call(new("status")); return status.Status == "completed" && Data(status).GetProperty("agents").GetArrayLength() == 2; });
             Check(!hosting.IsCompleted && !agentA.IsCompleted && !agentB.IsCompleted, "hosts exited");
             passed++; Console.WriteLine("PASS G02/G04 two authenticated Agent roles, internal watchdog processes");
+            var sdk=new DesktopClient(controller);var sdkSession=await sdk.OpenSessionAsync("A",[]);
+            Check(sdkSession.Status=="completed","SDK session admission failed");
+            try
+            {
+                var sdkResult=await sdk.Execute(sdkSession.ControlSessionId!,"windows",new{});
+                Check(sdkResult.Status=="completed" && Data(sdkResult).GetProperty("windows").GetArrayLength()==0,"SDK scope contract mismatch");
+                Check((await sdk.GetRequestResultAsync(sdkSession.ControlSessionId!,sdkResult.RequestId!)).Status=="completed","SDK retained result mismatch");
+            }
+            finally {Check((await sdk.CloseSessionAsync(sdkSession.ControlSessionId!)).Status=="completed","SDK cleanup failed");}
+            passed++;Console.WriteLine("PASS S14 public C# Client API 2 scope, authenticated RPC, retained result and close (mock desktop)");
             // A pinned certificate cannot claim B's registered machine identity.
-            async Task<string> Impersonate(string machine, StateStore identity)
+            async Task<string> Impersonate(string machine, StateStore identity, int wireVersion = GuiProtocol.WireVersion)
             {
                 using var tcp = new TcpClient(); using var timeout = new CancellationTokenSource(5000); await tcp.ConnectAsync("127.0.0.1", port, timeout.Token);
                 using var ssl = new SslStream(tcp.GetStream(), false, (_, cert, _, _) => cert != null && ConnectionSettings.Hash(cert) == a.ControllerCertificate);
                 using var cert = ConnectionSettings.Certificate(identity);
                 await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = "localhost", ClientCertificates = new X509CertificateCollection { cert }, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13 }, timeout.Token);
-                await GuiWire.Write(ssl, new AgentHello(machine, 1, "test", "Default"), timeout.Token);
+                await GuiWire.Write(ssl, new AgentHello(machine, 1, "test", "Default", wireVersion), timeout.Token);
                 return (await GuiWire.Read<GuiResponse>(ssl, timeout.Token)).Error?.Code ?? "accepted";
             }
+            Check(await Impersonate("A", aStore, 0) == "IncompatiblePeerVersion", "legacy peer accepted");
             Check(await Impersonate("B", aStore) == "MachineCertificateMismatch", "certificate identity mismatch accepted");
             Check(await Impersonate("A", aStore) == "DuplicateMachineConnection", "duplicate machine accepted");
             var rogue = new StateStore(Path.Combine(root, "rogue")); ConnectionSettings.Initialize(rogue, "rogue");

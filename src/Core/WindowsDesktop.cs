@@ -6,10 +6,22 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 namespace DesktopTestDriver;
 
-public sealed class WindowsDesktop(int session, string executable, string privateCaptureDirectory) : IGuiDesktop, IDisposable
+public sealed class WindowsDesktop(int session, string executable, string privateCaptureDirectory) : IGuiDesktop, IAutomationDesktop, IDisposable
 {
     private readonly WindowGenerations generations = new();
-    public void Dispose() => generations.Dispose();
+    private readonly Dictionary<string, UiaWorker> workers = new();
+    public UiaResult Automation(UiaCommand command, CancellationToken cancellation)
+    {
+        UiaWorker worker;
+        lock (workers)
+        {
+            if (!workers.TryGetValue(command.ScopeSession, out worker!)) workers[command.ScopeSession] = worker = new UiaWorker(executable, cancellation);
+        }
+        try { return worker.Call(command, cancellation); }
+        catch { lock (workers) { if (workers.GetValueOrDefault(command.ScopeSession) == worker) workers.Remove(command.ScopeSession); } worker.Dispose(); throw; }
+    }
+    public void ReleaseAutomation(string session) { lock (workers) { if (workers.Remove(session, out var worker)) worker.Dispose(); } }
+    public void Dispose() { lock (workers) { foreach (var worker in workers.Values) worker.Dispose(); workers.Clear(); } generations.Dispose(); }
     public static void EnableDpi() => Native.SetProcessDpiAwarenessContext(new IntPtr(-4));
     public static string DesktopName()
     {
@@ -22,7 +34,16 @@ public sealed class WindowsDesktop(int session, string executable, string privat
         }
         finally { Native.CloseDesktop(desktop); }
     }
-    public bool Valid { get { try { using var p = Process.GetCurrentProcess(); return p.SessionId == session && session > 0 && Native.WTSGetActiveConsoleSessionId() == session && DesktopName() == "Default" && !Elevated(p.Handle); } catch { return false; } } }
+    [DllImport("wtsapi32.dll", SetLastError=true)] private static extern bool WTSQuerySessionInformation(IntPtr server,int session,int info,out IntPtr buffer,out int bytes);
+    [DllImport("wtsapi32.dll")] private static extern void WTSFreeMemory(IntPtr buffer);
+    public static string SessionKind(int session)
+    {
+        if(!WTSQuerySessionInformation(IntPtr.Zero,session,8,out var state,out var stateBytes)) return "unavailable";
+        try { if(stateBytes<4 || Marshal.ReadInt32(state)!=0) return "disconnected"; } finally {WTSFreeMemory(state);}
+        if(!WTSQuerySessionInformation(IntPtr.Zero,session,16,out var protocol,out var protocolBytes)) return "unavailable";
+        try {return protocolBytes<2 ? "unavailable" : Marshal.ReadInt16(protocol) switch {0=>"console",2=>"rdp",_=>"unsupported"};} finally {WTSFreeMemory(protocol);}
+    }
+    public bool Valid { get { try { using var p = Process.GetCurrentProcess(); return p.SessionId == session && session > 0 && SessionKind(session) is "console" or "rdp" && DesktopName() == "Default" && !Elevated(p.Handle); } catch { return false; } } }
     public static bool Elevated(IntPtr process)
     {
         if (!Native.OpenProcessToken(process, 8, out var token)) throw new GuiException("AccessDenied");
@@ -39,12 +60,15 @@ public sealed class WindowsDesktop(int session, string executable, string privat
         var title = new StringBuilder(1024); Native.GetWindowText(h, title, title.Capacity);
         if (!Native.GetClientRect(h, out var r)) throw new GuiException("ObservationUnavailable"); var origin = new Native.Point();
         if (!Native.ClientToScreen(h, ref origin)) throw new GuiException("ObservationUnavailable");
-        return new(handle, Processes.Identify(p), title.ToString(), new(origin.X, origin.Y, r.Right - r.Left, r.Bottom - r.Top), Native.GetDpiForWindow(h), Native.GetForegroundWindow() == h, generations.Get(handle));
+        var className = new StringBuilder(256); Native.GetClassName(h, className, className.Capacity);
+        return new(handle, Processes.Identify(p), title.ToString(), new(origin.X, origin.Y, r.Right - r.Left, r.Bottom - r.Top), Native.GetDpiForWindow(h), Native.GetForegroundWindow() == h, generations.Get(handle)) { ClassName = className.ToString(), OwnerHandle = Native.GetWindow(h, 4).ToInt64() };
     }
-    public DesktopWindow[] Windows()
+    public DesktopWindow[] Windows() => Enumerate(null);
+    public DesktopWindow[] ScopedWindows(DesktopProcess[] scope) => Enumerate(scope);
+    private DesktopWindow[] Enumerate(DesktopProcess[]? scope)
     {
         if (!Valid) throw new GuiException("NoInteractiveSession"); var found = new List<DesktopWindow>();
-        Native.EnumWindows((h, _) => { try { if (Native.DwmGetWindowAttribute(h, 14, out var cloaked, 4) == 0 && cloaked != 0) return true; var w = Identify(h.ToInt64()); if (w.Title.Length > 0 && w.Bounds.Width > 0 && w.Bounds.Height > 0) found.Add(w); } catch { } return true; }, IntPtr.Zero);
+        Native.EnumWindows((h, _) => { try { Native.GetWindowThreadProcessId(h, out var pid); if (scope != null && !scope.Any(p => p.Pid == pid)) return true; if (Native.DwmGetWindowAttribute(h, 14, out var cloaked, 4) == 0 && cloaked != 0) return true; var w = Identify(h.ToInt64()); if (w.Title.Length > 0 && w.Bounds.Width > 0 && w.Bounds.Height > 0) found.Add(w); } catch { } return true; }, IntPtr.Zero);
         return found.ToArray();
     }
     public bool Focus(DesktopWindow window)

@@ -7,7 +7,7 @@ using System.Text.Json;
 
 namespace DesktopTestDriver;
 
-public sealed record AgentHello(string MachineId, int InteractiveSessionId, string User, string Desktop);
+public sealed record AgentHello(string MachineId, int InteractiveSessionId, string User, string Desktop, int WireVersion = 0);
 public sealed class AgentHost
 {
     private readonly AgentSettings settings;
@@ -23,8 +23,8 @@ public sealed class AgentHost
         try
         {
             input = new(store, backend);
-            sessions = new(store, settings.MachineId, settings.InteractiveSessionId); sessions.Recover();
-            handler = new(store, desktop, sessions, input, settings.MaxStopMilliseconds);
+            sessions = new(store, settings.MachineId, settings.InteractiveSessionId, settings.MachineUsage); sessions.Recover();
+            handler = new(store, desktop, sessions, input, settings.MaxStopMilliseconds, settings.MachineUsage) { Interaction = backend is WindowsInput ? new InteractionGuard(settings.InteractiveSessionId) : null };
         }
         catch { singleInstance.Dispose(); throw; }
     }
@@ -34,9 +34,19 @@ public sealed class AgentHost
         agentRunning = true,
         interactiveSessionId = settings.InteractiveSessionId,
         desktop = desktop.Valid ? "Default" : "unavailable",
-        supportedOperations = GuiProtocol.Operations,
+        sessionKind = desktop is WindowsDesktop ? WindowsDesktop.SessionKind(settings.InteractiveSessionId) : "simulated",
+        supportedOperations = GuiProtocol.Operations.Concat(AutomationOperations.All.Select(o => o.Operation)).ToArray(),
+        diagnostics = new[] { new DiagnosticItem("interactiveDesktop", desktop.Valid ? "supported" : "unsupported", desktop.Valid ? "active-user-session-default-desktop" : "interactive-desktop-required"), new DiagnosticItem("backgroundMutations", "unknown", "per-action-qualification-required"), new DiagnosticItem("globalInput", handler.Interaction?.State == "monitoring" ? "supported" : "unknown", "explicit-policy-and-live-lease-required") },
         captureTargets = new[] { "window" },
-        apiVersion = 1,
+        applicationProfiles = new ProfileRegistry(store).List(),
+        apiVersion = 2,
+        supportedApiVersions = new[] { 1, 2 },
+        machineUsage = settings.MachineUsage,
+        operationDescriptors = OperationCatalog.All,
+        supportedInteractionPolicies = settings.MachineUsage == "dedicated" ? new[] { "background-only", "isolated-desktop", "foreground-exclusive" } : new[] { "background-only", "foreground-exclusive" },
+        activityMonitorState = handler.Interaction?.State ?? "simulated",
+        externalInputEvents = handler.Interaction?.ExternalInputEvents ?? 0,
+        hardwareInputEvents = handler.Interaction?.HardwareInputEvents ?? 0,
         maxRequestBytes = GuiProtocol.MaxRequestBytes,
         maxCommandMilliseconds = 5000,
         maxStopMilliseconds = settings.MaxStopMilliseconds,
@@ -53,8 +63,18 @@ public sealed class AgentHost
             case "heartbeat": return new GuiResponse("completed");
             case "open":
                 if (!desktop.Valid) return GuiResponse.Reject("NoInteractiveSession");
-                var opened = sessions.Open(GuiProtocol.Text(payload, "mode"), payload.GetProperty("idleSeconds").GetInt32());
+                var opened = sessions.Open(GuiProtocol.Text(payload, "mode"), payload.GetProperty("idleSeconds").GetInt32(), payload.TryGetProperty("apiVersion", out var av) ? av.GetInt32() : 1, payload.TryGetProperty("interactionPolicy", out var policy) && policy.ValueKind != JsonValueKind.Null ? policy.GetString() : null, payload.TryGetProperty("targetScope", out var scope) && scope.ValueKind != JsonValueKind.Null ? GuiProtocol.Decode<DesktopProcess[]>(scope.GetRawText()) : null, payload.TryGetProperty("applicationProfileId", out var profileId) && profileId.ValueKind != JsonValueKind.Null ? profileId.GetString() : null);
+                try { handler.Interaction?.Arm(sessions.Get(opened.ControlSessionId)); opened=sessions.Get(opened.ControlSessionId).Info; sessions.Save(sessions.Get(opened.ControlSessionId)); }
+                catch { await handler.Release(sessions.Get(opened.ControlSessionId), true, "LeaseAdmissionFailed"); throw; }
                 return new GuiResponse("completed", ControlSessionId: opened.ControlSessionId, Data: opened);
+            case "session-pause":
+                var pausedId = GuiProtocol.Text(payload, "sessionId"); sessions.Pause(pausedId, "ExplicitPause"); await handler.Release(sessions.Get(pausedId), false, "ExplicitPause"); return new GuiResponse("completed", Data: sessions.Get(pausedId).Info);
+            case "session-resume":
+                var resumed = sessions.Resume(GuiProtocol.Text(payload, "sessionId"), payload.GetProperty("expectedRevision").GetInt64());
+                try { handler.Interaction?.Arm(sessions.Get(resumed.ControlSessionId)); }
+                catch { sessions.Pause(resumed.ControlSessionId, "LeaseAdmissionFailed"); throw; }
+                return new GuiResponse("completed", Data: resumed);
+            case "session-reconcile": return new GuiResponse("completed", Data: sessions.Reconcile(GuiProtocol.Text(payload, "sessionId"), GuiProtocol.Text(payload, "requestId"), GuiProtocol.Text(payload, "resolution"), GuiProtocol.Text(payload, "evidenceRef"), payload.GetProperty("expectedRevision").GetInt64()));
             case "sessions": return new GuiResponse("completed", Data: new { sessions = sessions.List() });
             case "execute": return await handler.Execute(GuiProtocol.Decode<AgentCommand>(payload.GetRawText()));
             case "result": return handler.Result(GuiProtocol.Text(payload, "sessionId"), GuiProtocol.Text(payload, "requestId"));
@@ -113,8 +133,14 @@ public sealed class AgentHost
                 while (!lifetime.IsCancellationRequested)
                 {
                     if (!Processes.Alive(watchdogIdentity)) { await CloseAll("WatchdogUnavailable"); lifetime.Cancel(); break; }
+                    handler.Interaction?.Ping();
                     foreach (var s in sessions.Active.ToArray())
                     {
+                        if (s.Info.State == "active" && s.Info.Mode == "control" && handler.Interaction != null)
+                        {
+                            try { handler.Interaction.Check(s); }
+                            catch (GuiException) { sessions.Pause(s.Info.ControlSessionId, "ExternalActivityOrMonitorFailure"); await handler.Release(s, false, "ExternalActivityOrMonitorFailure"); continue; }
+                        }
                         if (s.Info.State == "active" && (!desktop.Valid || Stopwatch.GetElapsedTime(s.LastActivity).TotalSeconds >= s.Info.IdleSeconds))
                             await handler.Release(s, true, desktop.Valid ? "IdleExpired" : "DesktopChanged");
                     }
@@ -137,8 +163,10 @@ public sealed class AgentHost
                     using var ssl = new SslStream(tcp.GetStream(), false, (_, cert, _, _) => cert != null && ConnectionSettings.Hash(cert) == settings.ControllerCertificate &&
                         DateTime.UtcNow < cert.GetExpirationDateStringAsUtc());
                     await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions { TargetHost = settings.ControllerHost, ClientCertificates = new X509CertificateCollection { certificate }, EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13 }, connecting.Token);
-                    await GuiWire.Write(ssl, new AgentHello(settings.MachineId, settings.InteractiveSessionId, System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value, "Default"), connecting.Token);
-                    var accepted = await GuiWire.Read<GuiResponse>(ssl, connecting.Token);
+                    await GuiWire.Write(ssl, new AgentHello(settings.MachineId, settings.InteractiveSessionId, System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value, "Default", GuiProtocol.WireVersion), connecting.Token);
+                    GuiResponse accepted;
+                    try { accepted = await GuiWire.Read<GuiResponse>(ssl, connecting.Token); }
+                    catch (EndOfStreamException) { throw new GuiException("PeerHandshakeFailed"); }
                     if (accepted.Status != "completed") throw new GuiException(accepted.Error?.Code ?? "ConnectionRejected");
                     await using var peer = new RpcPeer(ssl) { Handler = Dispatch };
                     var running = peer.Run(lifetime.Token);
@@ -170,7 +198,7 @@ public sealed class AgentHost
         catch (OperationCanceledException) { }
         finally
         {
-            lifetime.Cancel(); var clean = await CloseAll("AgentStopped"); await maintenance; await heartbeat;
+            lifetime.Cancel(); var clean = await CloseAll("AgentStopped"); await maintenance; await heartbeat; handler.Interaction?.Dispose();
             if (clean) store.Write("watchdog-stop.json", true);
             await Task.WhenAny(watchdog.WaitForExitAsync(), Task.Delay(1500));
         }
