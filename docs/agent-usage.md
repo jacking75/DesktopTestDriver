@@ -8,15 +8,14 @@ Controller와 Agent는 같은 Windows PC에서도 함께 실행할 수 있다. A
 
 API 1과 API 2를 함께 지원한다. Controller와 Agent는 wire 2 빌드를 함께 배포한다. API 1의 클릭·키 입력 의미는 유지하며 UIA로 몰래 바꾸지 않는다. `machineUsage` 기본값은 `shared`이다. 공유 화면에서는 기본적으로 전역 입력을 거부하고, 동작별 비간섭 측정을 등록한 프로필에 한해 UIA 의미 조작을 허용한다. 실제 키·마우스 입력에는 `foreground-exclusive`를 명시하며 30초 lease와 사용자 활동 감지를 적용한다. 전용 테스트 환경에는 `dedicated`와 `isolated-desktop`을 사용할 수 있다.
 
-Agent는 로그인한 일반 사용자의 **활성 콘솔 또는 활성 RDP 세션**에서 실행한다. Controller와 Agent는 같은 머신에서도 동작한다. RDP는 Agent가 실행되는 사용자 세션에 계속 연결돼 있어야 하며, 연결 끊김·잠금·보안 데스크톱·관리자 실행은 거부한다. `--doctor`의 `sessionKind`, `desktop`, `inputAvailable`로 현재 상태를 확인한다.
+Agent는 로그인한 일반 사용자의 **활성 콘솔 또는 활성 RDP 세션**에서 실행한다. Controller와 Agent는 같은 머신에서도 동작한다. RDP는 Agent가 실행되는 사용자 세션에 계속 연결돼 있어야 하며, 연결 끊김·잠금·보안 데스크톱·관리자 실행은 거부한다. `--doctor`의 data.sessionKind·desktop·inputAvailable로 데스크톱 상태를 확인한다. inputAvailable은 데스크톱 유효 여부이며 입력 권한이나 lease 확보를 보장하지 않는다. data.diagnostics·activityMonitorState와 세션의 interactionPolicy·state도 확인한다.
 
 ```powershell
-Controller.exe --doctor --machine local-test
-Controller.exe --profile-validate examples/standalone/forms.profile.json
-# scope.json은 실제 PID·시작 시각·EXE 경로·SHA-256의 DesktopProcess 배열이다.
-Controller.exe --session-open --machine local-test --api-version 2 --mode observe --target-scope scope.json
-Controller.exe --inspect --session CONTROL_ID --window WINDOW_ID
-Controller.exe --session-close CONTROL_ID
+.\Controller.exe --doctor --machine local-test
+.\Controller.exe --profile-validate .\examples\standalone\forms.profile.json
+# 이미 실행 중인 앱의 실제 PID·시작 시각·EXE 경로·SHA-256 배열을 scope.json에 준비한다.
+# 예제가 세션 열기 → windows로 실제 창 ID 조회 → inspect → 세션 닫기를 수행한다.
+.\examples\standalone\Inspect.ps1 -Controller .\Controller.exe -Machine local-test -TargetScope .\scope.json
 ```
 
 앱 프로필의 `application`에는 기계별 경로를 직접 넣지 않고 binding 이름을 지정한다. Agent의 `--register-profile PROFILE.json BINDINGS.json`은 EXE·관리 DLL 해시와 작업 폴더를 검증한다. `--qualify-profile QUALIFICATION.json`은 프로필·바이너리·OS·측정 시각·증거 해시·허용 동작을 연결한다. 전역 입력 또는 대상 창 전경 전환이 있던 증거는 인증하지 않는다. 바이너리·프로필·OS·증거 변경이나 인증 만료는 신규 mutation을 차단한다. 인증된 프로필도 실행 직전에 대상 신원·요소 snapshot·패턴·disabled 상태와 대상 앱 활동을 다시 검사한다.
@@ -24,12 +23,12 @@ Controller.exe --session-close CONTROL_ID
 | 기능 | 지원 범위와 제한 |
 |---|---|
 | 대상 범위 | PID·시작 시각·경로·해시를 확인한다. API 2의 빈 scope는 다른 앱을 열거하지 않는다. 새 창은 같은 소유 프로세스 또는 허용된 Job 자식 관계로 검증한다. |
-| 요소 선택 | ID·정확한 type/name/class/framework·부모/조상 조건을 지원한다. 중복과 불완전 탐색을 성공으로 처리하지 않는다. 암호·제외 필드는 반환하지 않는다. |
+| API 2 요소 선택 | automationId·controlType·name·className·frameworkId·parent·ancestorAutomationId 선택자를 지원한다. 중복과 불완전 탐색을 성공으로 처리하지 않는다. 암호·프로필 제외 값은 가린다. API 1 controls는 제한된 목록이므로 그 목록만으로 전체 UI의 부재를 증명하지 않는다. |
 | UIA | 세션별 MTA 헬퍼와 사용자 전용 인증 파이프를 사용한다. Value/Invoke/선택/토글/확장/스크롤은 네이티브 UIA3로 호출한다. 미지원 패턴에서 키·마우스로 대체하지 않는다. |
 | 가상 목록 | inspect의 컨테이너 ID와 snapshot으로 `find-item`을 요청한다. 가상 목록은 불완전 관측으로 표시한다. Realize/Scroll은 별도 mutation이며 자동으로 실행하지 않는다. |
 | 창·대화상자 | owner·class·title로 창을 찾고 기다린다. 모달·파일 대화상자는 활성화할 수 있어 기본 공유 화면 인증에 포함하지 않는다. |
 | 앱 수명 | attach한 앱은 종료 소유권을 얻지 않는다. session launch는 시작 전 원장과 suspended Job 편입으로 자식을 포함한다. 정상 닫기 후 필요하면 소유 Job을 종료하고 멤버 0을 확인한다. keep 앱은 유지한다. |
-| 실제 측정 | 기본 WinForms/WPF Value와 WinForms Invoke는 전역 입력 0·전경 전환 0으로 확인했다. 다중 창·가려진 창·동적 교체·WPF 가상 목록도 별도 검증했다. 모든 앱과 모든 동작의 비간섭을 보장하지 않는다. |
+| 실제 측정 | WinForms/WPF 기본 UIA, 다중 창·동적 교체·가상 목록을 검사하는 테스트 코드가 있다. 해당 환경에서 실제 실행한 결과와 증거로 통과 여부를 판단한다. 로컬 계약 테스트만으로 실제 UI나 모든 앱·동작의 비간섭을 보장하지 않는다. |
 | 제품 연결 | Core는 제품 API를 참조하지 않는다. 회의예약의 어댑터·스킬·실행기는 해당 제품 저장소에 둔다. |
 
 `--request-stdin`은 EOF로 끝난 JSON 요청 하나를 읽고 stdout에 결과 JSON 하나를 반환한다. `examples/standalone/Inspect.ps1`, `Inspect.cs`는 관측과 세션 정리를 보여준다. 배포 폴더의 Client.dll·Core.dll·Contracts.dll로 C# 예제를 독립 빌드할 수 있다. `schemas/`는 DTO 구조 Schema이며 의미·길이·범위의 최종 검사는 런타임 parser가 수행한다.
@@ -71,15 +70,15 @@ Controller.exe --session-close CONTROL_ID
 
 --session-open의 --machine은 필수이며 --status의 실제 machineId를 사용한다. --mode의 기본값은 control, --idle-seconds의 기본값은 900이다. 유휴 시간은 GUI 명령 수락 시 갱신한다. 상태·결과 조회만으로 유휴 만료를 연장하지 않는다. 지원 범위와 실제 만료 시각은 세션 응답으로 반환한다. 세션이 만료되어도 보관 기간 안의 요청 결과는 조회할 수 있어야 한다.
 
-같은 데스크톱의 control 세션은 하나만 허용하고 observe 세션은 별도로 둘 수 있다. observe 세션은 창·UI·화면 읽기와 상태 조회만 수행한다. focus·입력·앱 실행·앱 종료 요청은 GUI 변경 전에 거부한다.
+같은 Agent에서 종료되지 않은 control 세션은 하나만 허용하고 observe 세션은 별도로 둘 수 있다. 전역 입력 lease는 같은 사용자·Windows 세션의 Agent 사이에서도 경합을 막는다. 여러 Agent의 모든 세션이 하나의 전역 목록으로 관리되는 것은 아니다. observe 세션은 창·UI·화면 읽기와 상태 조회만 수행한다. focus·입력·앱 실행·앱 종료 요청은 GUI 변경 전에 거부한다.
 
 세션 상태는 active·closing·closed·expired·blocked로 구분한다. 종료할 때는 새 변경 요청을 차단하고 대기 요청을 취소한 뒤, 실행 중 입력의 중단·도구 소유 입력 해제·session 수명의 앱 종료를 확인한다. 종료 중이거나 중단·해제를 확인하지 못한 세션은 새 조작 세션을 허용하지 않는다. 관측 세션 종료는 다른 세션이나 제품 입력을 해제하지 않는다.
 
 개별 요청의 제한 시간에는 상주 Controller의 수락 이후 대기 시간이 포함된다. 대기 중 기한이 지나면 실행하지 않는다. 이미 전달한 요청의 중단을 확인하지 못했으면 completionUnknown을 반환하고 해당 조작 세션의 새 변경을 막는다. CLI 프로세스 종료만으로 수락된 작업을 취소하지 않으며, 요청 자체의 제한 시간은 그대로 적용한다. 결과 조회로 원래 수행 여부를 확인하고 자동으로 재입력하지 않는다.
 
-읽기 요청은 전경 창·선택 상태·창 위치를 바꾸지 않는다. 관측 전용 세션은 제품이 전달한 입력을 도구 소유 입력으로 처리하거나 그 입력을 방해하지 않는다. observe 모드의 release-input도 변경 명령으로 거부한다. 창이 가려지거나 최소화되어 정확한 화면을 얻을 수 없으면 임의로 활성화하지 않고 ObservationUnavailable을 반환한다.
+읽기 요청은 전경 창·선택 상태·창 위치를 바꾸지 않는다. 관측 전용 세션은 제품이 전달한 입력을 도구 소유 입력으로 처리하거나 그 입력을 방해하지 않는다. observe 모드의 release-input도 변경 명령으로 거부한다. 캡처할 창이 가려져 정확한 화면을 얻을 수 없으면 임의로 활성화하지 않고 ObservationUnavailable을 반환한다. 최소화·숨김·소멸된 창은 식별 단계에서 WindowNotFound로 거부될 수 있다. UIA 조회와 픽셀 캡처의 가림 조건은 다르다.
 
-단일 호출 명령은 --help를 제외하고 표준 출력에 UTF-8 JSON 객체 하나를 출력한다. --json-lines는 입력 한 줄마다 응답 한 줄을 출력하며 상주 --serve는 별도 실행 모드다. 진행 로그는 표준 오류에 출력한다. 정상 JSON 앞뒤에 안내 문구를 섞지 않는다. --request-status는 저장된 원래 요청의 응답 형식을 그대로 사용한다.
+상태·세션·요청 등 일반 단일 호출 명령은 표준 출력에 UTF-8 JSON 객체 하나를 출력한다. --help는 도움말을 출력하고 --export-schemas는 Schema 파일을 쓰며 성공 시 응답 JSON을 출력하지 않는다. --json-lines는 입력 한 줄마다 응답 한 줄을 출력하며 상주 --serve는 별도 실행 모드다. 진행 로그는 표준 오류에 출력한다. 정상 JSON 앞뒤에 안내 문구를 섞지 않는다. --request-status는 저장된 원래 요청의 응답 형식을 그대로 사용한다.
 
 | 종료 코드 | 의미 |
 |---|---|
@@ -162,22 +161,22 @@ UTF-8 JSON 객체 하나만 받는다. 단계 배열·조건문·expect·$ref·�
 | status | 의미와 다음 행동 |
 |---|---|
 | `completed` | 요청한 관측 또는 GUI 동작이 끝남. 반환값·화면을 읽고 제품 결과는 별도로 판단 |
-| `rejected` | GUI 변경 전에 거부됨. 오류를 수정하거나 새로 관측 |
+| `rejected` | 일반 GUI 요청의 실행 전 거부다. 다만 세션 열기·닫기·재개 등 관리 명령의 통신 오류나 RequestTimeout은 서버 측 무효과를 증명하지 않으므로 상태를 조회한다 |
 | `failed` | 요청 처리 중 오류. data에 알려진 수행 범위·입력 해제 결과를 반환. 입력을 그대로 반복하지 않음 |
-| `running` | 결과 조회 시 아직 실행 중. 결과를 다시 조회 |
+| `running` | 아직 최종 결과가 없다. 수락·대기·실행 상태 또는 SDK 대기 취소 응답을 구분하고 결과를 다시 조회한다 |
 | `completionUnknown` | 수행 여부 또는 수행 범위를 확정할 수 없음. 결과·화면을 다시 확인하고 다음 행동 결정 |
 
 실패 응답의 error는 `{ "code": "오류코드", "message": "구체적인 원인" }`이다. data가 없으면 null이다. 입력 전달 중 일부만 수행됐다면 보낸 이벤트 수와 입력 해제 결과를 가능한 범위에서 data로 반환한다. 앱이 실제로 처리했는지는 보장하지 않는다.
 
 상태·세션 명령도 같은 응답 형태를 사용한다. 대상이 있는 응답은 실제 machineId를 반환하며, 전체 목록 조회처럼 대상이 없는 경우 machineId는 null이다. 해당 명령에 없는 requestId·controlSessionId도 null이다. 세션 생성은 data.controlSessionId·machineId·mode·idleExpiresAt을 반환한다. 세션 조회는 세션 상태·idleExpiresAt·inputReleased를 반환한다. ID 없는 세션 조회는 data.sessions에 controlSessionId·machineId·mode·createdAt·idleExpiresAt·state를 가진 배열을 반환한다. 세션 종료는 inputReleased·terminatedProcessIds·retainedProcessIds를 반환한다. 정상 종료를 반복 요청해도 다시 GUI 조작을 하지 않고 종료 상태를 반환한다.
 
-상주 Controller가 공개 응답을 보관하고 --request-status로 반환한다. Agent의 실제 수행 기록과 Controller의 공개 응답을 구분한다. 확정된 completed·failed·rejected는 재조회로 바꾸지 않는다. completionUnknown은 원래 기록으로 확인한 경우에만 확정 결과로 갱신할 수 있다. running은 실제 작업 또는 이미지 전송이 진행 중임을 확인한 상태다.
+상주 Controller가 공개 응답을 보관하고 --request-status로 반환한다. Agent의 실제 수행 기록과 Controller의 공개 응답을 구분한다. 확정된 completed·failed·rejected는 재조회로 바꾸지 않는다. completionUnknown은 원래 기록으로 확인한 경우에만 확정 결과로 갱신할 수 있다. running은 최종 응답이 아직 없는 수락·대기·실행·전송 상태를 나타낸다. 현재 실제 실행 중임을 별도로 증명하지 않는다. SDK의 ClientWaitCanceled 읽기 응답도 running일 수 있으므로 원래 요청 결과를 조회한다.
 
-inputReleased는 해당 세션의 도구 소유 입력에 관한 값이다. true는 남은 소유 입력이 없음을 확인한 것, false는 미해제 입력이 확인된 것, null은 확인하지 못한 것이다. 세션 닫기 응답은 기본 5초 안에 확인한 결과를 반환한다. 정리가 미완료이면 failed 또는 completionUnknown과 세션 상태를 반환하고 상주 실행부가 정리를 이어간다. 중복 닫기는 같은 종료 처리를 조회·이어받는다.
+inputReleased는 해당 세션의 도구 소유 입력에 관한 값이다. true는 남은 소유 입력이 없음을 확인한 것, false는 미해제 입력이 확인된 것, null은 확인하지 못한 것이다. Controller는 세션 닫기 응답을 최대 5초 동안 기다린다. Agent가 정리 미완료를 보고하면 completionUnknown과 CleanupIncomplete를 반환하지만, 응답 대기 자체가 끝나면 rejected와 RequestTimeout이 반환될 수도 있다. 어느 경우든 종료 완료로 보지 않고 세션 상태를 다시 조회한 뒤 필요하면 같은 세션 ID로 닫기를 재요청한다. 이미 확인된 정상 종료를 다시 요청하면 종료 상태를 반환한다.
 
 차단된 조작 세션도 상태·결과 조회, 명시적 세션 종료, 소유 입력만 해제하는 release-input은 사용할 수 있다. release-input에는 전경 창이나 유효 캡처를 요구하지 않는다. 관측 세션은 이 변경 명령을 계속 거부한다. 실패 결과가 있더라도 미해제 입력이 남으면 새 변경 요청을 허용하지 않는다. 재시작·재연결·중복 조회로 원래 요청·정리의 마감 시간을 새로 시작하지 않는다.
 
-명시적 release-input은 대기 입력 취소·실행 중 입력의 중단 확인 후 소유 입력을 해제하며 앱이나 세션은 닫지 않는다. API 2는 해제 후 blocked를 유지하므로 원인을 확인하고 현재 revision으로 명시적으로 재개한다. API 1도 다른 차단 원인이나 종료 처리가 없고 원래 입력의 종료와 해제를 확인한 경우에만 새 입력을 허용한다.
+명시적 release-input은 대기 입력 취소·실행 중 입력의 중단 확인 후 소유 입력을 해제하며 앱이나 세션은 닫지 않는다. API 2는 해제 후 blocked를 유지하므로 원인을 확인하고 현재 revision으로 명시적으로 재개한다. API 1도 다른 차단 원인이나 종료 처리가 없고 원래 입력의 종료와 해제를 확인한 경우에만 상태가 active로 돌아갈 수 있다. 해제 시 입력 lease도 반환하므로 active만으로 후속 입력이 가능하다고 판단하지 않는다. 필요하면 pause 후 현재 revision으로 resume해 새 lease를 확보한다.
 
 ## 정확하고 빠른 E2E 실행 기준
 
@@ -226,21 +225,21 @@ API 2 세션에 API 2 요청을 보내며 `windowId`는 해당 세션에서 조�
 
 ## 창과 요소를 선택하는 방법
 
-API 2의 반복 작업은 **처음 찾은 요소 참조를 재사용**한다. `find-element`를 매번 호출하면 새 탐색이다. `elementId`와 `snapshotToken`을 보관하고 `capabilities`에 `windowId`, `elementId`, `snapshotToken`을 보내면 보관한 대상의 현재 값·활성 상태·패턴을 읽는다. C#에서는 `ReadElementAsync`를 사용한다. 같은 참조로 `SetValueAsync`, `InvokeAsync`도 호출할 수 있다. 현재 값은 캐시하지 않는다.
+API 2의 반복 작업은 **처음 찾은 요소 참조를 재사용**한다. `find-element`를 매번 호출하면 새 탐색이다. `elementId`와 `snapshotToken`을 보관하고 `capabilities`에 `windowId`, `elementId`, `snapshotToken`을 보내면 보관한 대상의 현재 값·활성 상태·패턴을 읽는다. C#에서는 `ReadElementAsync`를 사용한다. 같은 참조로 `SetValueAsync`, `InvokeAsync`도 호출할 수 있다. 현재 값은 캐시하지 않는다. 참조 재사용은 영구 보장이 아니며 작업자 재시작이나 참조 보관 한도 초과 후에는 필요한 영역을 다시 조회한다.
 
 창의 식별만 필요하면 `inspect`에 `rootOnly:true`를 지정한다. 처음에 목록·패널을 찾은 뒤, `find-element` 또는 `wait-condition`에 `searchRootElementId`, `searchRootSnapshotToken`을 지정하면 해당 영역만 탐색한다. C#의 `FindInElementAsync`도 같은 계약이다. 동적 목록의 새 메시지는 이 범위에서 찾는다. 입력란·상태란·고정 버튼을 찾기 위해 동적 목록 전체를 다시 탐색하지 않는다.
 
-참조를 사용할 때마다 프로세스·창·RuntimeId·부모 관계와 선택자 조건을 다시 검증한다. 이름을 선택자에 지정하지 않았다면 창 제목·알림 표시 변경만으로 참조를 폐기하지 않는다. 창 재생성·요소 교체·선택자 불일치는 `StaleElement`로 거부하며, 필요한 영역을 다시 조회한다. `completionUnknown` 변경 동작을 자동 재전송하지 않는다.
+참조를 사용할 때마다 프로세스·창·RuntimeId·부모 관계와 선택자 조건을 다시 검증한다. 이름을 선택자에 지정하지 않았다면 창 제목·알림 표시 변경만으로 참조를 폐기하지 않는다. 창 재생성은 `WindowChanged`·`WindowNotFound`, 요소 교체·선택자 불일치는 `StaleElement` 등으로 거부하며, 필요한 영역을 다시 조회한다. `completionUnknown` 변경 동작을 자동 재전송하지 않는다.
 
 부분 경로 응답의 `observation.complete:false`는 창 전체를 반환하지 않았다는 뜻이다. 해당 조회가 끝났는지는 `queryComplete`로 구분한다. 각 노드의 `detailState`가 `metadata-only`이면 값·패턴은 읽지 않은 상태이다. `lookupKind`는 `root-only`, `selector-path`, `scoped-selector`, `bound-reference`, `full-tree` 등 실제 수행 경로를 표시한다. 가상 목록의 미열거 항목을 없다고 판단하지 않는다.
 
-언어 중립 클라이언트는 `Controller.exe --config FILE --json-lines` 프로세스 하나를 유지할 수 있다. 표준 입력 한 줄에 `LocalCommand` JSON 하나를 보내면 표준 출력 한 줄에 응답 하나를 받는다. `{"command":"status"}`와 `{"command":"session-close","sessionId":"실제 세션 ID"}`를 순차 전송한다. 요청은 `{"command":"request","request":"직렬화한 GUI 요청 JSON 문자열"}`이다. stdin EOF로 프로세스를 종료하며 GUI 세션은 명시적으로 닫는다. 요청 ID·저널·권한 검사는 기존 Controller/Agent와 같다.
+언어 중립 클라이언트는 `Controller.exe --config FILE --json-lines` 프로세스 하나를 유지할 수 있다. 표준 입력 한 줄에 `LocalCommand` JSON 하나를 보내면 표준 출력 한 줄에 응답 하나를 받는다. `{"command":"status"}`와 `{"command":"session-close","sessionId":"실제 세션 ID"}`를 순차 전송한다. 요청은 `{"command":"request","request":"직렬화한 GUI 요청 JSON 문자열"}`이다. stdin EOF로 프로세스를 종료하며 GUI 세션은 명시적으로 닫는다. 정상 EOF의 프로세스 종료 코드는 개별 응답 실패가 있어도 0이므로 각 줄의 status·error를 판정한다. 요청 ID·저널·권한 검사는 기존 Controller/Agent와 같다.
 
 아래 1~5는 API 1의 실제 입력 경로다. API 2 백그라운드 UIA에는 focus를 추가하지 않는다.
 
 1. windows로 창을 조회한다. data.windows의 실제 windowId·제목·PID·실행 경로·영역을 읽는다. 인덱스 0이나 추측 HWND로 선택하지 않는다.
 2. 선택한 windowId로 controls를 요청한다. data.elements에서 실제 elementId·AutomationId·이름·종류·활성 상태를 읽는다.
-3. 요소 조작은 elementId를 우선 사용한다. AutomationId를 쓰면 그 창에서 활성 대상 하나만 일치해야 한다. 여러 요소가 맞으면 AmbiguousTarget으로 거부한다.
+3. 요소 조작은 elementId를 우선 사용한다. AutomationId를 쓰면 그 창에서 일치 대상이 정확히 하나여야 하고 그 대상이 활성 상태여야 한다. 비활성 요소도 중복 판정에 포함한다. 여러 요소가 맞으면 AmbiguousTarget으로 거부한다.
 4. 좌표가 필요한 경우 먼저 capture를 받아 이미지를 열어 본다. 이미지의 좌표를 그대로 창 내부 픽셀 좌표로 지정하고 captureId를 함께 보낸다.
 5. 변경 입력 전에는 focus를 명시적으로 요청한다. 읽기 명령과 click·type-text가 몰래 다른 창을 활성화하지 않는다. 전경 창이 다르면 ForegroundMismatch로 거부한다.
 
@@ -276,6 +275,8 @@ position은 `{ "x": 120, "y": 60, "captureId": "cap-001" }`, drag의 start·end�
 
 좌표 입력은 캡처된 창 내부 범위 안의 정수만 허용한다. output은 Controller 머신의 절대 파일 경로이며, 새 capture 요청마다 다른 파일 경로를 사용한다. 이미 파일이 있으면 OutputExists로 거부하고 덮어쓰지 않는다. 같은 요청 ID의 재조회는 원래 파일 정보만 반환하며 새 캡처를 하지 않는다. 이미지 data.coordinateSpace는 `window-client-pixels`이고 expiresAt은 이 캡처를 좌표 입력에 사용할 수 있는 마지막 시각이다.
 
+API 2 세션의 capture에는 해당 바이너리를 검증하는 applicationProfileId와 captureAllowed: true인 등록 프로필이 필요하다. redactedAutomationIds가 있으면 픽셀 캡처를 허용하지 않는다. 조건을 충족하지 않으면 CaptureNotAuthorized로 거부하며 observe 모드나 targetScope만으로 캡처 권한을 얻지 않는다. background-only에서는 launch·close-window·terminate-owned 같은 수명 변경도 허용하지 않으므로 기존 앱 관측·인증된 UIA 조작과 실제 입력·앱 수명 관리를 구분한다.
+
 capture는 UI 요소 조회와 독립적으로 수행한다. 이미지 전달까지 요청 제한 시간 안에 끝나고 작업 PC에 완성된 파일이 저장되어야 completed와 data.path를 반환한다. 실패하면 부분 파일을 최종 이미지로 남기지 않는다. 캡처 좌표의 유효 기간과 작업 PC에 저장한 이미지의 보관 기간은 별개다.
 
 캡처는 Agent 촬영 완료·상주 Controller의 수신/검증·로컬 최종 파일 확정·공개 응답 저장 순서로 처리한다. 촬영만 끝났거나 전송에 실패한 결과는 completed가 아니다. CLI가 종료되어도 상주 Controller가 원래 제한 시간 안에서 처리·결과 저장을 맡는다. 실패가 확정된 캡처를 재조회해 새로 촬영하거나 전송하지 않는다. 재시작 후 이미 저장된 파일은 원래 요청·경로·해시를 검증한 경우에만 성공 결과로 복원한다.
@@ -283,6 +284,8 @@ capture는 UI 요소 조회와 독립적으로 수행한다. 이미지 전달까
 text는 UTF-16 코드 단위로 1~4096자의 유효한 Unicode 문자열이며 Enter·Tab 같은 제어 키는 key 또는 chord로 보낸다. keys는 중복 없는 키 이름 배열 1~8개다. 키 이름은 CTRL·ALT·SHIFT·WIN·ENTER·TAB·ESC·BACKSPACE·DELETE·SPACE·LEFT·RIGHT·UP·DOWN·HOME·END·PAGEUP·PAGEDOWN·A~Z·0~9·F1~F24를 사용한다. F01·F+1 같은 별칭은 거부한다. 다른 키는 지원한다고 추정하지 않는다. 길게 누르는 down은 maxHoldMilliseconds 안에 해제되므로 일반 조합은 chord를 사용한다.
 
 문자 수 상한은 요청 시간 안에 전부 입력된다는 보장이 아니다. 입력 소유 기록을 영속화하므로 긴 경로나 문장은 PC의 저장 장치 속도에 따라 5초를 넘을 수 있다. 정상 입력을 준비할 때는 짧은 문자열로 나누고 각 요청 완료를 확인한 뒤 다음 부분을 보낸다. 시간 초과가 발생한 요청은 원래 ID로 결과와 알려진 입력 수를 먼저 조회하고 실제 입력칸 값을 확인한다. 전체 문자열이나 같은 부분을 무조건 다시 보내지 않는다.
+
+launch 응답의 processId는 `process-...` 형식의 도구 소유 식별자이며 숫자 Windows PID가 아니다. windows의 pid와 비교할 때는 launch 응답의 pid를 사용한다. terminate-owned의 processIds와 세션의 terminatedProcessIds·retainedProcessIds는 도구 식별자 배열이다.
 
 launch의 executable은 대상 Agent PC의 실행 파일 절대 경로, arguments는 문자열 배열이다. 셸 명령으로 결합하지 않는다. lifetime이 keep이면 세션을 닫아도 앱을 유지한다. session이면 세션 종료 시 도구 소유 앱을 종료한다. 이미 실행 중이던 앱은 terminate-owned의 대상으로 취급하지 않는다.
 
@@ -363,10 +366,10 @@ launch의 executable은 대상 Agent PC의 실행 파일 절대 경로, argument
 
 | 오류·상태 | 에이전트의 행동 |
 |---|---|
-| WindowNotFound·ElementNotFound·StaleElement | 창·요소를 다시 조회하고 새 ID로 새 작업 요청 |
+| WindowNotFound·WindowChanged·ElementNotFound·StaleElement | 먼저 원래 요청의 status와 수행 범위를 확인한다. 실행 전 거부가 확인된 경우에만 새 관측으로 대상을 다시 선택한다 |
 | AmbiguousTarget | 후보 정보를 읽고 더 구체적인 실제 대상을 선택. 첫 항목을 임의 선택하지 않음 |
-| ForegroundMismatch | 창을 재확인하고 명시적 focus 후 새 입력 요청 |
-| StaleCapture | 새 캡처를 받아 이미지 좌표를 다시 정함 |
+| ForegroundMismatch | 원래 입력의 일부 수행 여부와 실제 값을 확인한다. 전경 상태를 복구한 뒤 이미 수행한 부분을 반복하지 않도록 다음 동작을 결정한다 |
+| StaleCapture | 끌기 등은 일부 수행됐을 수 있다. 원래 수행 범위·입력 해제·현재 상태를 확인하고 새 캡처로 다음 동작을 결정한다 |
 | ObservationUnavailable | 다른 지원 관측 사용. 읽지 못한 값을 성공·빈 값으로 처리하지 않음 |
 | ReadOnlySession | 입력 없는 세션임을 확인. 기존 세션의 권한을 몰래 바꾸지 않음 |
 | ControllerUnavailable·ControllerResponseUnavailable·AgentDisconnected | 상주 Controller와 원격 Agent의 연결을 확인. 변경 요청의 응답 유실이면 요청 결과 조회부터 수행 |
@@ -415,7 +418,7 @@ Controller 상태 폴더에는 공개 최종 응답 `request-*.json`과 세션 �
 
 캡처는 대상 창의 클라이언트 표면을 1:1로 얻으며 출력은 SDR PNG다. HDR 원본의 색 정확도는 보장하지 않는다. 다른 앱의 픽셀이나 Windows 필기용 마우스 통과 레이어를 이미지에 합성하지 않는다. 일반 불투명 창의 가림·최소화·숨김·모니터 밖 상태는 거부하며 창을 몰래 앞으로 가져오지 않는다. 캡처 알림 테두리가 잠시 나타날 수 있다. 캡처 대기 한도는 2200ms이며 원래 요청의 남은 시간도 함께 적용한다.
 
-요소 목록은 최대 1024개·깊이 16으로 제한하며 UI 조회 대기 한도는 3000ms다. 원래 요청의 남은 시간이 더 짧으면 그 시간을 적용한다. 값은 최대 65536자로 읽으며 암호는 반환하지 않는다. 동적으로 변한 화면은 새 관측으로 확인한다.
+전체 트리 열거는 최대 1024개·깊이 16으로 제한한다. API 1 controls의 UI 조회 한도는 3000ms이며 원래 요청의 남은 시간이 더 짧으면 그 시간을 적용한다. API 2 UIA 호출과 조건 대기는 요청의 남은 시간에 따르며 모든 UIA 호출이 별도의 3000ms 한도를 갖는 것은 아니다. 값은 최대 65536자로 읽으며 암호는 반환하지 않는다. 동적으로 변한 화면은 새 관측으로 확인한다.
 
 앱 실행 직전에는 보호된 launch-intent 기록을 남긴다. 프로세스 생성 직후 장애로 session 앱의 실제 소유 정보를 확인하지 못하면 종료 성공을 추정하지 않으며 세션을 blocked로 유지한다. keep 앱은 유지하고, 알 수 없는 PID를 추측해 종료하지 않는다. 남은 소유 정보는 상태 폴더의 launch-intent 기록과 세션의 retainedProcessIds로 확인한다.
 
@@ -423,6 +426,6 @@ Controller 상태 폴더에는 공개 최종 응답 `request-*.json`과 세션 �
 
 Controller 연결 전에 실패하면 `ControllerUnavailable`을 반환한다. 유효한 요청을 전송하기 시작한 뒤 응답을 잃으면 `ControllerResponseUnavailable`과 `completionUnknown`, 원래 `requestId`·`controlSessionId`·`operation`을 반환한다. 읽기 요청도 완료 여부를 확인하지 못했으므로 `running`으로 단정하지 않는다. 이 응답은 클라이언트의 관측이며 Agent 세션이 차단됐다는 증거가 아니다. 새 변경 요청을 멈추고 원래 요청의 결과와 세션 상태를 조회한다. 변경 요청을 새 ID로 재전송하지 않는다.
 
-C# SDK의 세션 열기·닫기·결과 조회는 호출 전에 취소된 토큰이면 연결을 시작하지 않는다. 전송 후 대기 취소는 서버 작업 취소를 보장하지 않는다.
+C# SDK의 세션 열기·닫기·결과 조회는 호출 전에 취소된 토큰이면 연결을 시작하지 않는다. 전송 후 대기 취소는 서버 작업 취소를 보장하지 않는다. Execute의 대기 취소는 ClientWaitCanceled와 원래 요청 ID를 반환하며 변경은 completionUnknown, 읽기는 running으로 표시한다. 세션 열기 대기가 취소되거나 응답을 잃으면 --session-status 목록에서 만들어진 세션을 확인한다. 세션 닫기 대기가 취소되면 --session-status CONTROL_ID로 정리 결과를 확인한다.
 
 부모·조상 선택자 검색은 관측마다 요소 ID 인덱스를 한 번 만들어 부모를 찾는다. 반복적인 전체 배열 탐색을 줄이면서 중복 대상과 불완전한 관측의 거부 규칙을 유지한다.
