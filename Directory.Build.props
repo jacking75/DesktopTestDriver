@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <InvariantGlobalization>false</InvariantGlobalization>

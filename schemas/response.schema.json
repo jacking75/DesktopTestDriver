@@ -35,6 +35,9 @@
         },
         "message": {
           "type": "string"
+        },
+        "data": {
+          "default": null
         }
       },
       "required": [
@@ -43,20 +46,6 @@
       ],
       "additionalProperties": false,
       "default": null
-    },
-    "inputEventsSent": {
-      "type": "integer",
-      "default": 0
-    },
-    "inputReleased": {
-      "type": [
-        "boolean",
-        "null"
-      ],
-      "default": null
-    },
-    "apiVersion": {
-      "type": "integer"
     },
     "operation": {
       "type": [
@@ -69,6 +58,9 @@
         "string",
         "null"
       ]
+    },
+    "elapsedMilliseconds": {
+      "type": "integer"
     },
     "observedAt": {
       "type": "string",

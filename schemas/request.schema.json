@@ -4,9 +4,6 @@
     "null"
   ],
   "properties": {
-    "apiVersion": {
-      "type": "integer"
-    },
     "requestId": {
       "type": "string"
     },
@@ -19,10 +16,16 @@
     "timeoutMilliseconds": {
       "type": "integer"
     },
-    "arguments": true
+    "arguments": true,
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    }
   },
   "required": [
-    "apiVersion",
     "requestId",
     "controlSessionId",
     "operation",

@@ -82,4 +82,13 @@ internal static class Native
     [DllImport("user32.dll")] public static extern bool TranslateMessage(ref Message message);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr DispatchMessage(ref Message message);
     [DllImport("user32.dll")] public static extern bool PostThreadMessage(uint thread, uint message, UIntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr window, int command);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct ShellExecuteInfo { public int Size; public uint Mask; public IntPtr Window; public string? Verb, File, Parameters, Directory; public int Show; public IntPtr Instance, IdList; public string? Class; public IntPtr ClassKey; public uint HotKey; public IntPtr Icon, Process; }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool ShellExecuteEx(ref ShellExecuteInfo info);
+    [DllImport("kernel32.dll")] public static extern int GetProcessId(IntPtr process);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr CreateEvent(IntPtr attributes, bool manualReset, bool initialState, string name);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr OpenEvent(uint access, bool inherit, string name);
+    [DllImport("kernel32.dll")] public static extern bool SetEvent(IntPtr handle);
 }

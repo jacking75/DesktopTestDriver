@@ -1,43 +1,54 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace DesktopTestDriver;
 
-public sealed class GuiException(string code, string? detail = null) : Exception(detail ?? code) { public string Code { get; } = code; }
-public sealed record GuiRequest(int ApiVersion, string RequestId, string ControlSessionId, string Operation,
-    int TimeoutMilliseconds, JsonElement Arguments);
-public sealed record GuiError(string Code, string Message);
-public sealed record GuiResponse(string Status, string? RequestId = null, string? ControlSessionId = null,
-    object? Data = null, GuiError? Error = null, int InputEventsSent = 0, bool? InputReleased = null)
+/// <summary>Driver error. <see cref="NoEffect"/> marks a refusal raised before any dispatch began.</summary>
+public sealed class GuiException(string code, string? detail = null, object? details = null) : Exception(detail ?? code)
 {
-    public int ApiVersion { get; init; } = 1;
+    public string Code { get; } = code;
+    public object? Details { get; } = details;
+    public bool NoEffect { get; init; }
+}
+public sealed record GuiRequest(string RequestId, string ControlSessionId, string Operation, int TimeoutMilliseconds, JsonElement Arguments, string? Note = null);
+public sealed record GuiError(string Code, string Message, object? Data = null);
+public sealed record GuiResponse(string Status, string? RequestId = null, string? ControlSessionId = null, object? Data = null, GuiError? Error = null)
+{
     public string? Operation { get; init; }
     public string? MachineId { get; init; }
+    public long ElapsedMilliseconds { get; init; }
     public DateTimeOffset ObservedAt { get; init; } = DateTimeOffset.UtcNow;
     [JsonIgnore]
     public int ExitCode => Status switch { "completed" => 0, "completionUnknown" => 2, "running" => 3, _ => 1 };
-    public static GuiResponse Reject(string code, GuiRequest? r = null) => new("rejected", r?.RequestId, r?.ControlSessionId, Error: new(code, code)) { Operation = r?.Operation, ApiVersion = r?.ApiVersion ?? 1 };
+    public static GuiResponse Reject(string code, GuiRequest? r = null, object? data = null, string? message = null) =>
+        new("rejected", r?.RequestId, r?.ControlSessionId, Error: new(code, message ?? code, data)) { Operation = r?.Operation };
 }
 public static class GuiProtocol
 {
-    public const int Version = 1, WireVersion = 2, MaxRequestBytes = 1_048_576, MaxCommandMilliseconds = 5000;
+    public const int WireVersion = 3, MaxRequestBytes = 1_048_576, MaxCommandMilliseconds = 5000, MaxWaitMilliseconds = 30000, DefaultTimeout = 5000;
     public static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // Korean text stays readable UTF-8 instead of \uXXXX escapes: fewer bytes and tokens.
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
-    public static readonly string[] Operations = ["windows", "controls", "capture", "focus", "click", "type-text", "key", "chord", "move", "wheel", "drag", "launch", "close-window", "terminate-owned", "release-input"];
-    public static bool ReadOnly(string operation) => operation is "windows" or "controls" or "capture" || AutomationOperations.ReadOnly(operation);
+    public static bool ReadOnly(string operation) => Operations.Get(operation).ReadOnly;
     public static string Encode<T>(T value) => JsonSerializer.Serialize(value, Json);
     public static T Decode<T>(string value)
     {
         using var document = JsonDocument.Parse(value); Unique(document.RootElement);
-        return JsonSerializer.Deserialize<T>(value, Json) ?? throw new GuiException("InvalidRequest");
+        return document.RootElement.Deserialize<T>(Json) ?? throw new GuiException("InvalidRequest");
     }
-    public static string Hash(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
+    public static T Convert<T>(object? value) => value is JsonElement e ? e.Deserialize<T>(Json)! : JsonSerializer.SerializeToElement(value, Json).Deserialize<T>(Json)!;
+    public static JsonElement Element(object? value) => value is JsonElement e ? e : JsonSerializer.SerializeToElement(value, Json);
+    public static string Hash(byte[] bytes) => System.Convert.ToHexStringLower(SHA256.HashData(bytes));
+    public static string Hash(string text) => Hash(Encoding.UTF8.GetBytes(text));
     public static void Unique(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
@@ -50,152 +61,65 @@ public static class GuiProtocol
     public static bool Id(string? value) => value is { Length: > 0 and <= 80 } && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
     public static GuiRequest Parse(string json)
     {
+        json = json.TrimStart('﻿'); // PowerShell pipes may prepend a byte order mark.
         if (Encoding.UTF8.GetByteCount(json) > MaxRequestBytes) throw new GuiException("RequestTooLarge");
         using var document = JsonDocument.Parse(json); Unique(document.RootElement);
         var root = document.RootElement;
-        Fields(root, "apiVersion requestId controlSessionId operation timeoutMilliseconds arguments");
-        var version = root.GetProperty("apiVersion").GetInt32();
-        if (version is not (1 or 2)) throw new GuiException("UnsupportedApiVersion");
+        Fields(root, "requestId controlSessionId operation timeoutMilliseconds arguments note");
         var operation = Text(root, "operation");
-        if (!Operations.Contains(operation) && !(version == 2 && AutomationOperations.Contains(operation))) throw new GuiException("UnsupportedOperation");
         var id = Text(root, "requestId"); var session = Text(root, "controlSessionId");
         if (!Id(id) || !Id(session)) throw new GuiException("InvalidRequest");
-        var timeout = root.TryGetProperty("timeoutMilliseconds", out var t) ? t.GetInt32() : 5000;
-        if (timeout is < 1 or > 5000) throw new GuiException("InvalidTimeout");
-        var a = root.GetProperty("arguments");
-        if (version == 2 && AutomationOperations.Contains(operation))
-        {
-            ValidateAutomation(operation, a);
-            return new(version, id, session, operation, timeout, a.Clone());
-        }
-        Fields(a, operation switch
-        {
-            "windows" or "release-input" => "",
-            "controls" or "focus" or "close-window" => "windowId",
-            "capture" => "windowId output",
-            "click" => "windowId elementId automationId position button",
-            "type-text" => "windowId text",
-            "key" => "windowId key action",
-            "chord" => "windowId keys",
-            "move" => "windowId position",
-            "wheel" => "windowId position delta",
-            "drag" => "windowId captureId start end button steps",
-            "launch" => version == 2 ? "executable arguments lifetime workingDirectory" : "executable arguments lifetime",
-            "terminate-owned" => "processIds",
-            _ => ""
-        });
-        if (operation is not ("windows" or "release-input" or "launch" or "terminate-owned")) _ = Text(a, "windowId");
-        switch (operation)
-        {
-            case "capture": if (!Path.IsPathFullyQualified(Text(a, "output"))) throw new GuiException("InvalidOutputPath"); break;
-            case "click":
-                if (new[] { "elementId", "automationId", "position" }.Count(n => a.TryGetProperty(n, out _)) != 1) throw new GuiException("AmbiguousTarget");
-                if (a.TryGetProperty("position", out var pos)) Position(pos, true);
-                else _ = Text(a, a.TryGetProperty("elementId", out _) ? "elementId" : "automationId");
-                Button(a); break;
-            case "type-text":
-                var text = Text(a, "text");
-                if (text.Length > 4096 || text.Any(char.IsControl) || !ValidUnicode(text)) throw new GuiException("InvalidText"); break;
-            case "key": _ = Key(Text(a, "key")); if (Text(a, "action") is not ("press" or "down" or "up")) throw new GuiException("InvalidAction"); break;
-            case "chord":
-                var keys = a.GetProperty("keys").EnumerateArray().Select(x => x.GetString() ?? "").ToArray();
-                if (keys.Length is < 1 or > 8 || keys.Distinct().Count() != keys.Length) throw new GuiException("InvalidKeys");
-                foreach (var key in keys) _ = Key(key); break;
-            case "move":
-            case "wheel":
-                Position(a.GetProperty("position"), true);
-                if (operation == "wheel" && a.GetProperty("delta").GetInt32() is < -1200 or > 1200) throw new GuiException("InvalidDelta"); break;
-            case "drag":
-                _ = Text(a, "captureId"); Position(a.GetProperty("start"), false); Position(a.GetProperty("end"), false); Button(a);
-                if (a.TryGetProperty("steps", out var steps) && steps.GetInt32() is < 1 or > 100) throw new GuiException("InvalidSteps"); break;
-            case "launch":
-                if (a.TryGetProperty("workingDirectory", out var wd) && (!Path.IsPathFullyQualified(wd.GetString()!) || !Directory.Exists(wd.GetString()))) throw new GuiException("InvalidWorkingDirectory");
-                if (!Path.IsPathFullyQualified(Text(a, "executable"))) throw new GuiException("InvalidExecutable");
-                foreach (var arg in a.GetProperty("arguments").EnumerateArray()) if (arg.ValueKind != JsonValueKind.String || arg.GetString()!.Contains('\0')) throw new GuiException("InvalidArguments");
-                if (a.TryGetProperty("lifetime", out var life) && life.GetString() is not ("keep" or "session")) throw new GuiException("InvalidLifetime"); break;
-            case "terminate-owned":
-                var ids = a.GetProperty("processIds").EnumerateArray().ToArray(); if (ids.Length is < 1 or > 128) throw new GuiException("InvalidProcesses");
-                foreach (var value in ids) if (!Id(value.GetString())) throw new GuiException("InvalidProcesses"); break;
-        }
-        var normalized = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(a.GetRawText())!;
-        if (operation is "click" or "drag" && !normalized.ContainsKey("button")) normalized["button"] = JsonSerializer.SerializeToElement("left");
-        if (operation == "drag" && !normalized.ContainsKey("steps")) normalized["steps"] = JsonSerializer.SerializeToElement(10);
-        if (operation == "launch" && !normalized.ContainsKey("lifetime")) normalized["lifetime"] = JsonSerializer.SerializeToElement("keep");
-        return new(version, id, session, operation, timeout, JsonSerializer.SerializeToElement(normalized));
+        var timeout = root.TryGetProperty("timeoutMilliseconds", out var t) ? t.GetInt32() : DefaultTimeout;
+        string? note = root.TryGetProperty("note", out var n) && n.ValueKind != JsonValueKind.Null ? n.GetString() : null;
+        if (note is { Length: > 120 }) throw new GuiException("InvalidNote");
+        var arguments = root.TryGetProperty("arguments", out var a) ? a.Clone() : JsonSerializer.SerializeToElement(new { });
+        var request = new GuiRequest(id, session, operation, timeout, arguments, note);
+        Validate(request); return request;
     }
-    private static void ValidateAutomation(string operation, JsonElement a)
+    /// <summary>Validates one request. Called at the controller boundary and again at the agent without re-encoding.</summary>
+    public static void Validate(GuiRequest r)
     {
-        Fields(a, operation switch
-        {
-            "find-window" or "wait-window" => "title className ownerWindowId pollMilliseconds",
-            "inspect" => "windowId treeView rootOnly",
-            "capabilities" => "windowId selector elementId snapshotToken",
-            "find-element" => "windowId selector searchRootElementId searchRootSnapshotToken",
-            "find-item" => "windowId elementId snapshotToken itemName",
-            "wait-condition" => "windowId selector condition expected pollMilliseconds searchRootElementId searchRootSnapshotToken",
-            "set-value" => "windowId elementId snapshotToken value expectedValueHash",
-            "set-toggle" => "windowId elementId snapshotToken desiredState",
-            "set-expanded" => "windowId elementId snapshotToken expanded",
-            "scroll-container" => "windowId elementId snapshotToken horizontal vertical",
-            _ => "windowId elementId snapshotToken"
-        });
-        if (operation is "find-window" or "wait-window")
-        {
-            if (!a.TryGetProperty("title", out _) && !a.TryGetProperty("className", out _) && !a.TryGetProperty("ownerWindowId", out _)) throw new GuiException("InvalidWindowSelector");
-            foreach (var f in new[] { "title", "className", "ownerWindowId" }) if (a.TryGetProperty(f, out _)) _ = Text(a, f);
-            if (a.TryGetProperty("pollMilliseconds", out var interval) && interval.GetInt32() is < 100 or > 1000) throw new GuiException("InvalidPollInterval");
-            return;
-        }
-        _ = Text(a, "windowId");
-        if(a.TryGetProperty("rootOnly",out var rootOnly)) _=rootOnly.GetBoolean();
-        if (a.TryGetProperty("treeView", out var view) && view.GetString() is not ("control" or "raw" or "content")) throw new GuiException("InvalidTreeView");
-        if (a.TryGetProperty("selector", out var selector)) ValidateSelector(selector, 0);
-        if(a.TryGetProperty("searchRootElementId",out _)){_=Text(a,"searchRootElementId");_=Text(a,"searchRootSnapshotToken");}else if(a.TryGetProperty("searchRootSnapshotToken",out _))throw new GuiException("InvalidSelector");
-        if(operation=="capabilities"&&a.TryGetProperty("elementId",out _)){_=Text(a,"elementId");_=Text(a,"snapshotToken");if(a.TryGetProperty("selector",out _))throw new GuiException("AmbiguousTarget");}
-        else if(operation=="capabilities"&&a.TryGetProperty("snapshotToken",out _))throw new GuiException("InvalidSelector");
-        if (operation is "find-element" or "wait-condition" && !a.TryGetProperty("selector", out _)) throw new GuiException("InvalidSelector");
-        if (operation == "find-item") _ = Text(a, "itemName");
-        if (!AutomationOperations.ReadOnly(operation) || operation == "find-item") { _ = Text(a, "elementId"); _ = Text(a, "snapshotToken"); }
-        if (operation == "set-value" && (a.GetProperty("value").GetString() is not {} value || value.Length > 4096 || !ValidUnicode(value) || value.Contains('\0'))) throw new GuiException("InvalidText");
-        if (operation == "set-toggle" && Text(a, "desiredState") is not ("on" or "off")) throw new GuiException("InvalidToggleState");
-        if (operation == "set-expanded") _ = a.GetProperty("expanded").GetBoolean();
-        if (operation == "scroll-container") foreach (var field in new[] { "horizontal", "vertical" }) { var n = a.GetProperty(field).GetDouble(); if (!double.IsFinite(n) || n is < -1 or > 100) throw new GuiException("InvalidScrollPercent"); }
-        if (operation == "wait-condition")
-        {
-            if (Text(a, "condition") is not ("exists" or "absent" or "enabled" or "value-equals" or "text-contains" or "toggle-equals")) throw new GuiException("InvalidCondition");
-            if (a.TryGetProperty("pollMilliseconds", out var poll) && poll.GetInt32() is < 100 or > 1000) throw new GuiException("InvalidPollInterval");
-        }
-    }
-    public static void ValidateSelector(JsonElement selector, int depth = 0)
-    {
-        if (depth > 8) throw new GuiException("InvalidSelector");
-        Fields(selector, "automationId controlType name className frameworkId ancestorAutomationId parent");
-        if (!selector.EnumerateObject().Any()) throw new GuiException("InvalidSelector");
-        foreach (var p in selector.EnumerateObject())
-            if (p.Name == "parent") ValidateSelector(p.Value, depth + 1);
-            else if (p.Value.GetString() is not { Length: > 0 and <= 1024 }) throw new GuiException("InvalidSelector");
-    }
-    private static bool ValidUnicode(string value)
-    {
-        for (int i = 0; i < value.Length; i++) if (char.IsSurrogate(value[i]) && (!char.IsHighSurrogate(value[i]) || ++i >= value.Length || !char.IsLowSurrogate(value[i]))) return false;
-        return true;
+        var d = Operations.Find(r.Operation) ?? throw new GuiException("UnsupportedOperation");
+        if (!Id(r.RequestId) || !Id(r.ControlSessionId)) throw new GuiException("InvalidRequest");
+        if (r.TimeoutMilliseconds < 1 || r.TimeoutMilliseconds > d.MaxTimeout) throw new GuiException("InvalidTimeout");
+        if (r.Note is { Length: > 120 }) throw new GuiException("InvalidNote");
+        ArgumentValidator.Validate(r.Operation, r.Arguments);
     }
     public static void Fields(JsonElement e, string allowed)
     {
-        if (e.ValueKind != JsonValueKind.Object || e.EnumerateObject().Any(p => !allowed.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains(p.Name))) throw new GuiException("UnknownField");
+        if (e.ValueKind != JsonValueKind.Object) throw new GuiException("UnknownField");
+        var names = allowed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var p in e.EnumerateObject()) if (!names.Contains(p.Name)) throw new GuiException("UnknownField", "UnknownField: " + p.Name);
     }
-    public static string Text(JsonElement a, string name) => a.GetProperty(name).GetString() is { Length: > 0 } s ? s : throw new GuiException("InvalidRequest");
-    private static void Position(JsonElement p, bool capture) { Fields(p, capture ? "x y captureId" : "x y"); _ = p.GetProperty("x").GetInt32(); _ = p.GetProperty("y").GetInt32(); if (capture) _ = Text(p, "captureId"); }
-    public static int Button(JsonElement a) => !a.TryGetProperty("button", out var b) ? 1 : b.GetString() switch { "left" => 1, "right" => 2, "middle" => 3, _ => throw new GuiException("InvalidButton") };
+    public static string Text(JsonElement a, string name) => a.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s ? s : throw new GuiException("InvalidRequest", "InvalidRequest: " + name);
+    public static string? OptionalText(JsonElement a, string name) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.GetString() : null;
+    public static int? OptionalInt(JsonElement a, string name) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.GetInt32() : null;
+    public static bool Flag(JsonElement a, string name, bool fallback = false) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.GetBoolean() : fallback;
+    public static bool Has(JsonElement a, string name) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null;
+    public static int Button(JsonElement a) => !Has(a, "button") ? 1 : a.GetProperty("button").GetString() switch { "left" => 1, "right" => 2, "middle" => 3, _ => throw new GuiException("InvalidButton") };
+    private static readonly Dictionary<string, int> NamedKeys = new(StringComparer.Ordinal)
+    {
+        ["CTRL"] = 0x11, ["ALT"] = 0x12, ["SHIFT"] = 0x10, ["WIN"] = 0x5B, ["ENTER"] = 13, ["TAB"] = 9, ["ESC"] = 27, ["BACKSPACE"] = 8,
+        ["DELETE"] = 46, ["INSERT"] = 45, ["SPACE"] = 32, ["LEFT"] = 37, ["RIGHT"] = 39, ["UP"] = 38, ["DOWN"] = 40, ["HOME"] = 36,
+        ["END"] = 35, ["PAGEUP"] = 33, ["PAGEDOWN"] = 34, ["APPS"] = 0x5D, ["PRINTSCREEN"] = 0x2C,
+        [";"] = 0xBA, ["="] = 0xBB, [","] = 0xBC, ["-"] = 0xBD, ["."] = 0xBE, ["/"] = 0xBF, ["`"] = 0xC0, ["["] = 0xDB, ["\\"] = 0xDC, ["]"] = 0xDD, ["'"] = 0xDE
+    };
     public static int Key(string key)
     {
         if (key.Length == 1 && (key[0] is >= 'A' and <= 'Z' or >= '0' and <= '9')) return key[0];
         if (key.StartsWith('F') && int.TryParse(key.AsSpan(1), out var f) && f is >= 1 and <= 24 && key == "F" + f.ToString(System.Globalization.CultureInfo.InvariantCulture)) return 0x70 + f - 1;
-        return key switch { "CTRL" => 0x11, "ALT" => 0x12, "SHIFT" => 0x10, "WIN" => 0x5B, "ENTER" => 13, "TAB" => 9, "ESC" => 27, "BACKSPACE" => 8, "DELETE" => 46, "SPACE" => 32, "LEFT" => 37, "RIGHT" => 39, "UP" => 38, "DOWN" => 40, "HOME" => 36, "END" => 35, "PAGEUP" => 33, "PAGEDOWN" => 34, _ => throw new GuiException("InvalidKey") };
+        if (key.StartsWith("NUMPAD", StringComparison.Ordinal) && key.Length == 7 && key[6] is >= '0' and <= '9') return 0x60 + key[6] - '0';
+        return NamedKeys.TryGetValue(key, out var code) ? code : throw new GuiException("InvalidKey");
+    }
+    public static bool ValidUnicode(string value)
+    {
+        for (int i = 0; i < value.Length; i++) if (char.IsSurrogate(value[i]) && (!char.IsHighSurrogate(value[i]) || ++i >= value.Length || !char.IsLowSurrogate(value[i]))) return false;
+        return true;
     }
     public static string Fingerprint(GuiRequest r)
     {
-        using var stream = new MemoryStream(); using (var writer = new Utf8JsonWriter(stream)) Canonical(JsonSerializer.SerializeToElement(r, Json), writer);
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) Canonical(JsonSerializer.SerializeToElement(r with { Note = null }, Json), writer);
         return Hash(stream.ToArray());
     }
     private static void Canonical(JsonElement e, Utf8JsonWriter writer)
@@ -203,5 +127,11 @@ public static class GuiProtocol
         if (e.ValueKind == JsonValueKind.Object) { writer.WriteStartObject(); foreach (var p in e.EnumerateObject().OrderBy(p => p.Name, StringComparer.Ordinal)) { writer.WritePropertyName(p.Name); Canonical(p.Value, writer); } writer.WriteEndObject(); }
         else if (e.ValueKind == JsonValueKind.Array) { writer.WriteStartArray(); foreach (var v in e.EnumerateArray()) Canonical(v, writer); writer.WriteEndArray(); }
         else e.WriteTo(writer);
+    }
+    public static Regex SafeRegex(string pattern)
+    {
+        if (pattern.Length is < 1 or > 256) throw new GuiException("InvalidSelector", "RegexTooLong");
+        try { return new Regex(pattern, RegexOptions.NonBacktracking | RegexOptions.CultureInvariant); }
+        catch (ArgumentException) { throw new GuiException("InvalidSelector", "InvalidRegex"); }
     }
 }

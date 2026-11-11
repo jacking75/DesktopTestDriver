@@ -14,11 +14,11 @@ public static class ContractSchemas
         }
         return new()
         {
-            ["application-profile.schema.json"] = Schema(typeof(ApplicationProfile)),
-            ["machine-bindings.schema.json"] = Schema(typeof(MachineBindings)),
             ["element-selector.schema.json"] = Schema(typeof(ElementSelector)),
-            ["observation.schema.json"] = Schema(typeof(Observation)),
-            ["operation-descriptor.schema.json"] = Schema(typeof(OperationDescriptor)),
+            ["observation-node.schema.json"] = Schema(typeof(ObservationNode)),
+            ["operation-descriptor.schema.json"] = Schema(typeof(OperationDescriptor[])),
+            ["window.schema.json"] = Schema(typeof(PublicWindow)),
+            ["capture.schema.json"] = Schema(typeof(CaptureInfo)),
             ["diagnostic.schema.json"] = Schema(typeof(DiagnosticItem[])),
             ["request.schema.json"] = Schema(typeof(GuiRequest)),
             ["response.schema.json"] = Schema(typeof(GuiResponse))

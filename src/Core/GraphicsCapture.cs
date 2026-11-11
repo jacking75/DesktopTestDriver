@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -41,45 +40,56 @@ public static class GraphicsCapture
         }
         finally { if (item != IntPtr.Zero) Marshal.Release(item); if (factory != IntPtr.Zero) Marshal.Release(factory); WindowsDeleteString(hstring); }
     }
-    public static async Task Save(long handle, int pid, long startTicks, PixelRect client, string destination)
+    // The D3D device is created once per worker process and reused for every capture.
+    private static IDirect3DDevice? device;
+    private static IDirect3DDevice Device()
     {
-        if (!GraphicsCaptureSession.IsSupported()) throw new GuiException("ObservationUnavailable", "GraphicsCaptureUnsupported");
-        var h = new IntPtr(handle); Native.GetWindowThreadProcessId(h, out var actualPid);
-        using var process = Process.GetProcessById(pid); using var current = Process.GetCurrentProcess();
-        if (actualPid != pid || process.StartTime.ToUniversalTime().Ticks != startTicks || process.SessionId != current.SessionId || WindowsDesktop.Elevated(process.Handle) || Native.IsIconic(h)) throw new GuiException("WindowChanged");
-        if (Native.DwmGetWindowRectAttribute(h, 9, out var rendered, Marshal.SizeOf<Native.NativeRect>()) != 0) throw new GuiException("ObservationUnavailable", "RenderedBoundsUnavailable");
-        int cropX = client.X - rendered.Left, cropY = client.Y - rendered.Top;
+        if (device != null) return device;
         IntPtr nativeDevice = IntPtr.Zero, context = IntPtr.Zero, dxgi = IntPtr.Zero, inspectable = IntPtr.Zero;
         try
         {
             Marshal.ThrowExceptionForHR(D3D11CreateDevice(IntPtr.Zero, 1, IntPtr.Zero, 0x20, IntPtr.Zero, 0, 7, out nativeDevice, out _, out context));
             var dxgiId = new Guid("54ec77fa-1377-44e6-8c32-88fd5f44c84c"); Marshal.ThrowExceptionForHR(Marshal.QueryInterface(nativeDevice, in dxgiId, out dxgi));
             Marshal.ThrowExceptionForHR(CreateDirect3D11DeviceFromDXGIDevice(dxgi, out inspectable));
-            using var device = WinRT.MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);
-            var item = Item(h);
-            if (item.Size.Width != rendered.Right - rendered.Left || item.Size.Height != rendered.Bottom - rendered.Top || cropX < 0 || cropY < 0 || cropX + client.Width > item.Size.Width || cropY + client.Height > item.Size.Height)
-                throw new GuiException("ObservationUnavailable", "CaptureGeometryMismatch");
-            using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, item.Size);
-            using var session = pool.CreateCaptureSession(item); session.IsCursorCaptureEnabled = false;
-            using var deadline = new CancellationTokenSource(1500); session.StartCapture();
-            Direct3D11CaptureFrame? next = null;
-            while (next == null) { deadline.Token.ThrowIfCancellationRequested(); next = pool.TryGetNextFrame(); if (next == null) await Task.Delay(5, deadline.Token); }
-            using var frame = next;
-            if (frame.ContentSize.Width != item.Size.Width || frame.ContentSize.Height != item.Size.Height) throw new GuiException("StaleCapture");
-            using var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask(deadline.Token);
-            using var converted = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
-            var length = checked(converted.PixelWidth * converted.PixelHeight * 4);
-            var buffer = new Windows.Storage.Streams.Buffer((uint)length); converted.CopyToBuffer(buffer);
-            var bytes = new byte[length]; using (var reader = DataReader.FromBuffer(buffer)) reader.ReadBytes(bytes);
-            var source = BitmapSource.Create(converted.PixelWidth, converted.PixelHeight, 96, 96, PixelFormats.Pbgra32, null, bytes, converted.PixelWidth * 4);
-            var cropped = new CroppedBitmap(source, new(cropX, cropY, client.Width, client.Height));
-            var encoder = new PngBitmapEncoder(); encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(cropped));
-            using var file = new FileStream(destination, FileMode.CreateNew); encoder.Save(file); file.Flush(true);
+            return device = WinRT.MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);
         }
         finally
         {
             if (inspectable != IntPtr.Zero) Marshal.Release(inspectable); if (dxgi != IntPtr.Zero) Marshal.Release(dxgi);
             if (context != IntPtr.Zero) Marshal.Release(context); if (nativeDevice != IntPtr.Zero) Marshal.Release(nativeDevice);
         }
+    }
+    /// <summary>Captures the client area (or a region of it) into a PNG. Runs inside the desktop worker.</summary>
+    public static object Save(CaptureCommand c) => SaveAsync(c).GetAwaiter().GetResult();
+    private static async Task<object> SaveAsync(CaptureCommand c)
+    {
+        if (!GraphicsCaptureSession.IsSupported()) throw new GuiException("ObservationUnavailable", "GraphicsCaptureUnsupported");
+        var h = new IntPtr(c.Handle); Native.GetWindowThreadProcessId(h, out var actualPid);
+        if (actualPid != c.Pid || Native.IsIconic(h)) throw new GuiException("WindowChanged");
+        if (Native.DwmGetWindowRectAttribute(h, 9, out var rendered, Marshal.SizeOf<Native.NativeRect>()) != 0) throw new GuiException("ObservationUnavailable", "RenderedBoundsUnavailable");
+        var client = c.Client; var region = c.Region ?? new PixelRect(0, 0, client.Width, client.Height);
+        if (region.Width < 1 || region.Height < 1 || region.X + region.Width > client.Width || region.Y + region.Height > client.Height) throw new GuiException("InvalidRegion", "RegionOutsideClientArea");
+        int cropX = client.X - rendered.Left + region.X, cropY = client.Y - rendered.Top + region.Y;
+        var item = Item(h);
+        if (cropX < 0 || cropY < 0 || cropX + region.Width > item.Size.Width || cropY + region.Height > item.Size.Height)
+            throw new GuiException("ObservationUnavailable", "CaptureGeometryMismatch");
+        using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(Device(), DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, item.Size);
+        using var session = pool.CreateCaptureSession(item); session.IsCursorCaptureEnabled = false;
+        using var deadline = new CancellationTokenSource(1500); session.StartCapture();
+        Direct3D11CaptureFrame? next = null;
+        while (next == null) { deadline.Token.ThrowIfCancellationRequested(); next = pool.TryGetNextFrame(); if (next == null) await Task.Delay(5, deadline.Token); }
+        using var frame = next;
+        if (frame.ContentSize.Width != item.Size.Width || frame.ContentSize.Height != item.Size.Height) throw new GuiException("StaleCapture");
+        using var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask(deadline.Token);
+        using var converted = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+        var length = checked(converted.PixelWidth * converted.PixelHeight * 4);
+        var buffer = new Windows.Storage.Streams.Buffer((uint)length); converted.CopyToBuffer(buffer);
+        var bytes = new byte[length]; using (var reader = DataReader.FromBuffer(buffer)) reader.ReadBytes(bytes);
+        var source = BitmapSource.Create(converted.PixelWidth, converted.PixelHeight, 96, 96, PixelFormats.Pbgra32, null, bytes, converted.PixelWidth * 4);
+        BitmapSource cropped = new CroppedBitmap(source, new(cropX, cropY, region.Width, region.Height));
+        if (c.Scale < 1) cropped = new TransformedBitmap(cropped, new ScaleTransform(c.Scale, c.Scale));
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(cropped));
+        using (var file = new FileStream(c.Destination, FileMode.CreateNew)) encoder.Save(file);
+        return new { width = cropped.PixelWidth, height = cropped.PixelHeight };
     }
 }

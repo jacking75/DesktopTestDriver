@@ -1,0 +1,80 @@
+{
+  "type": [
+    "object",
+    "null"
+  ],
+  "properties": {
+    "captureId": {
+      "type": "string"
+    },
+    "windowId": {
+      "type": "string"
+    },
+    "imageWidth": {
+      "type": "integer"
+    },
+    "imageHeight": {
+      "type": "integer"
+    },
+    "coordinateSpace": {
+      "type": "string"
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "bytes": {
+      "type": "integer"
+    },
+    "sha256": {
+      "type": "string"
+    },
+    "region": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "scale": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "captureId",
+    "windowId",
+    "imageWidth",
+    "imageHeight",
+    "coordinateSpace",
+    "capturedAt",
+    "expiresAt",
+    "bytes",
+    "sha256"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

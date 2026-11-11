@@ -1,317 +1,636 @@
-using System.Diagnostics;
-using System.Text;
+using System.Text.Json;
 using System.Windows.Automation;
 
 namespace DesktopTestDriver;
 
-public interface IAutomationDesktop
-{
-    UiaResult Automation(UiaCommand command, CancellationToken cancellation);
-    void ReleaseAutomation(string session) { }
-}
-
+/// <summary>UIA work inside the per-session worker process. Every element is identified by its runtime id and a
+/// snapshot token (hash of identity, parent and descriptive properties). A command revalidates, checks and
+/// dispatches in one round trip.</summary>
 public static class UiaAutomation
 {
-    private static WindowsDesktop? workerDesktop;
-    private static WindowsDesktop Desktop()
-    {
-        if(workerDesktop==null){using var process=Process.GetCurrentProcess();workerDesktop=new(process.SessionId,Environment.ProcessPath!,Path.GetTempPath());}return workerDesktop;
-    }
-    public static void DisposeWorker(){workerDesktop?.Dispose();workerDesktop=null;boundTargets.Clear();virtualItems.Clear();preparedAction=null;NativeAutomation.DisposeWorker();}
-    private static CacheRequest MetadataCache()
-    {
-        var cache=new CacheRequest{TreeScope=TreeScope.Element,AutomationElementMode=AutomationElementMode.Full,TreeFilter=Automation.RawViewCondition};
-        foreach(var property in new[]{AutomationElement.RuntimeIdProperty,AutomationElement.AutomationIdProperty,AutomationElement.ControlTypeProperty,AutomationElement.ClassNameProperty,AutomationElement.FrameworkIdProperty,AutomationElement.IsEnabledProperty,AutomationElement.IsOffscreenProperty,AutomationElement.IsPasswordProperty})cache.Add(property);return cache;
-    }
-    private sealed record PreparedAction(UiaCommand Command,Observation Observation,ObservationNode Target,Dictionary<string,AutomationElement> References,long At)
-    {
-        public ElementSelector? OriginalSelector {get;init;}=Command.Selector;
-        public string? OriginalSearchRoot {get;init;}=Command.SearchRootRuntimeId;
-    }
-    private static PreparedAction? preparedAction;
-    private static readonly Dictionary<string,PreparedAction> boundTargets=[];
-    private static string BoundKey(UiaCommand command,string id)=>command.ScopeSession+"|"+command.Window.Handle+"|"+command.Window.Generation+"|"+command.TreeView+"|"+id;
-    private static void Remember(UiaCommand command,Observation observation,ObservationNode target,Dictionary<string,AutomationElement> references)
-    {
-        if(target.ElementId.StartsWith("virtual-",StringComparison.Ordinal))return;
-        var byId=observation.Nodes.ToDictionary(n=>n.ElementId);var path=new List<ObservationNode>();var node=target;
-        while(true){path.Add(node);if(path.Count>17)return;if(node.ParentId==null)break;if(!byId.TryGetValue(node.ParentId,out node!))return;}
-        path.Reverse();var nodes=path.ToArray();var refs=nodes.ToDictionary(n=>n.ElementId,n=>references[n.ElementId]);
-        if(boundTargets.Count>=1024&&!boundTargets.ContainsKey(BoundKey(command,target.ElementId)))foreach(var key in boundTargets.OrderBy(p=>p.Value.At).Take(256).Select(p=>p.Key).ToArray())boundTargets.Remove(key);
-        boundTargets[BoundKey(command,target.ElementId)]=new(command,observation with{Nodes=nodes,Complete=false,TruncationReason="element-path",QueryComplete=true},target,refs,Stopwatch.GetTimestamp());
-    }
-    private static PreparedAction Revalidate(UiaCommand command,PreparedAction saved,DesktopWindow actual,TreeWalker walker,bool details)
-    {
-        if(saved.Command.Window.Process!=command.Window.Process)throw new GuiException("StaleElement","CachedProcessChanged");
-        var nodes=new List<ObservationNode>();
-        var cache=MetadataCache();
-        foreach(var prior in saved.Observation.Nodes)
-        {
-            var element=saved.References[prior.ElementId].GetUpdatedCache(cache);var c=element.Cached;var id=string.Join("-",(int[])element.GetCachedPropertyValue(AutomationElement.RuntimeIdProperty));var parent=prior.ParentId;
-            if(id!=prior.ElementId)throw new GuiException("StaleElement","CachedRuntimeChanged");
-            if(parent!=null){var liveParent=walker.GetParent(element);if(liveParent==null||string.Join("-",liveParent.GetRuntimeId())!=parent)throw new GuiException("StaleElement","CachedParentChanged");}
-            var name=c.IsPassword?"[password]":element.Current.Name;var type=c.ControlType.ProgrammaticName.Replace("ControlType.","",StringComparison.Ordinal);
-            if(c.AutomationId!=prior.AutomationId||type!=prior.ControlType||c.ClassName!=prior.ClassName||c.FrameworkId!=prior.FrameworkId)throw new GuiException("StaleElement","CachedStructureChanged");
-            nodes.Add(prior with{Name=name,Enabled=c.IsEnabled,Offscreen=c.IsOffscreen,Value=new(false,null,c.IsPassword?"redacted":"not-requested"),Patterns=[],DetailState="metadata-only"});
-        }
-        var target=nodes.Single(n=>n.ElementId==saved.Target.ElementId);if(details)target=ReadDetails(target,saved.References[target.ElementId]);nodes[^1]=target;
-        var observation=saved.Observation with{Nodes=nodes.ToArray(),QueriedAt=DateTimeOffset.UtcNow};
-        if(saved.OriginalSelector!=null&&!ElementQuery.Matches(target,saved.OriginalSelector,observation))throw new GuiException("StaleElement","CachedSelectorChanged");
-        return new(command,observation,target,saved.References,Stopwatch.GetTimestamp()){OriginalSelector=saved.OriginalSelector,OriginalSearchRoot=saved.OriginalSearchRoot};
-    }
-    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent,IntPtr child);
-    private static bool DirectMutation(string operation)=>operation is "invoke" or "set-value" or "select-item" or "set-toggle" or "set-expanded" or "scroll-container";
-    private static readonly Dictionary<string, (AutomationElement Element, ObservationNode Node, string ParentToken)> virtualItems = new();
-    private static readonly (AutomationPattern Pattern, string Name)[] Patterns = [
-        (InvokePattern.Pattern,"Invoke"), (ValuePattern.Pattern,"Value"), (SelectionItemPattern.Pattern,"SelectionItem"),
-        (TogglePattern.Pattern,"Toggle"), (ExpandCollapsePattern.Pattern,"ExpandCollapse"), (ScrollPattern.Pattern,"Scroll"),
-        (ScrollItemPattern.Pattern,"ScrollItem"), (VirtualizedItemPattern.Pattern,"VirtualizedItem"),
-        (ItemContainerPattern.Pattern,"ItemContainer"), (GridPattern.Pattern,"Grid"), (TablePattern.Pattern,"Table"), (RangeValuePattern.Pattern,"RangeValue")
+    /// <summary>Raised right before a provider method that can change the application is called.</summary>
+    public static bool DispatchStarted;
+    public const int MaxNodes = 2048, MaxName = 1024, MaxValue = 65536;
+    private static readonly Dictionary<string, AutomationElement> elements = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, (AutomationElement Element, ObservationNode Node, string ContainerToken)> virtualItems = new(StringComparer.Ordinal);
+    public static void DisposeWorker() { elements.Clear(); virtualItems.Clear(); NativeAutomation.DisposeWorker(); }
+
+    private static readonly (AutomationProperty Flag, string Name)[] PatternFlags = [
+        (AutomationElement.IsInvokePatternAvailableProperty, "Invoke"), (AutomationElement.IsValuePatternAvailableProperty, "Value"),
+        (AutomationElement.IsSelectionItemPatternAvailableProperty, "SelectionItem"), (AutomationElement.IsTogglePatternAvailableProperty, "Toggle"),
+        (AutomationElement.IsExpandCollapsePatternAvailableProperty, "ExpandCollapse"), (AutomationElement.IsScrollPatternAvailableProperty, "Scroll"),
+        (AutomationElement.IsScrollItemPatternAvailableProperty, "ScrollItem"), (AutomationElement.IsVirtualizedItemPatternAvailableProperty, "VirtualizedItem"),
+        (AutomationElement.IsItemContainerPatternAvailableProperty, "ItemContainer"), (AutomationElement.IsGridPatternAvailableProperty, "Grid"),
+        (AutomationElement.IsTablePatternAvailableProperty, "Table"), (AutomationElement.IsRangeValuePatternAvailableProperty, "RangeValue"),
+        (AutomationElement.IsWindowPatternAvailableProperty, "Window"), (AutomationElement.IsTextPatternAvailableProperty, "Text"),
+        (AutomationElement.IsSelectionPatternAvailableProperty, "Selection")
     ];
-    private static readonly AutomationProperty[] PatternAvailability = [AutomationElement.IsInvokePatternAvailableProperty,AutomationElement.IsValuePatternAvailableProperty,AutomationElement.IsSelectionItemPatternAvailableProperty,AutomationElement.IsTogglePatternAvailableProperty,AutomationElement.IsExpandCollapsePatternAvailableProperty,AutomationElement.IsScrollPatternAvailableProperty,AutomationElement.IsScrollItemPatternAvailableProperty,AutomationElement.IsVirtualizedItemPatternAvailableProperty,AutomationElement.IsItemContainerPatternAvailableProperty,AutomationElement.IsGridPatternAvailableProperty,AutomationElement.IsTablePatternAvailableProperty,AutomationElement.IsRangeValuePatternAvailableProperty];
-    public static UiaResult Execute(UiaCommand command)
+    private static readonly AutomationProperty? LegacyFlag = AutomationProperty.LookupById(30090);
+    private static readonly AutomationProperty[] Basic = [
+        AutomationElement.RuntimeIdProperty, AutomationElement.AutomationIdProperty, AutomationElement.ControlTypeProperty, AutomationElement.ClassNameProperty,
+        AutomationElement.FrameworkIdProperty, AutomationElement.IsEnabledProperty, AutomationElement.IsOffscreenProperty, AutomationElement.IsPasswordProperty,
+        AutomationElement.NameProperty, AutomationElement.BoundingRectangleProperty, AutomationElement.HasKeyboardFocusProperty, AutomationElement.HelpTextProperty,
+        AutomationElement.ItemStatusProperty, ValuePattern.ValueProperty, ValuePattern.IsReadOnlyProperty, TogglePattern.ToggleStateProperty,
+        SelectionItemPattern.IsSelectedProperty, ExpandCollapsePattern.ExpandCollapseStateProperty, RangeValuePattern.ValueProperty,
+        RangeValuePattern.MinimumProperty, RangeValuePattern.MaximumProperty, RangeValuePattern.IsReadOnlyProperty
+    ];
+    private static Condition View(string view) => view switch { "raw" => Automation.RawViewCondition, "content" => Automation.ContentViewCondition, _ => Automation.ControlViewCondition };
+    private static TreeWalker Walker(string view) => view switch { "raw" => TreeWalker.RawViewWalker, "content" => TreeWalker.ContentViewWalker, _ => TreeWalker.ControlViewWalker };
+    private static CacheRequest Request(TreeScope scope, string view)
     {
-        var prepared=preparedAction;preparedAction=null;
-        var desktop=Desktop();
-        var actual = desktop.Identify(command.Window.Handle);
-        if (!desktop.Valid || actual.Handle != command.Window.Handle || actual.Process != command.Window.Process) throw new GuiException("WindowChanged");
-        var walker = command.TreeView switch { "raw" => TreeWalker.RawViewWalker, "content" => TreeWalker.ContentViewWalker, "control" => TreeWalker.ControlViewWalker, _ => throw new GuiException("InvalidTreeView") };
-        if(command.RuntimeId!=null&&!command.RuntimeId.StartsWith("virtual-",StringComparison.Ordinal)&&(command.Operation=="capabilities"||DirectMutation(command.Operation))&&boundTargets.TryGetValue(BoundKey(command,command.RuntimeId),out var bound))
+        var cache = new CacheRequest { TreeScope = scope, TreeFilter = View(view), AutomationElementMode = AutomationElementMode.Full };
+        foreach (var p in Basic) cache.Add(p);
+        foreach (var p in PatternFlags) cache.Add(p.Flag);
+        if (LegacyFlag != null) cache.Add(LegacyFlag);
+        return cache;
+    }
+    private static CacheRequest IdOnly(string view)
+    {
+        var cache = new CacheRequest { TreeScope = TreeScope.Element, TreeFilter = View(view), AutomationElementMode = AutomationElementMode.Full };
+        cache.Add(AutomationElement.RuntimeIdProperty); cache.Add(AutomationElement.IsItemContainerPatternAvailableProperty); cache.Add(AutomationElement.NameProperty); return cache;
+    }
+    private sealed record Context(UiaCommand Command, AutomationElement Root, string RootId, Native.Point Origin);
+    private static string Rid(AutomationElement e, bool cached = true)
+    {
+        var value = cached ? e.GetCachedPropertyValue(AutomationElement.RuntimeIdProperty) : e.GetRuntimeId();
+        return value is int[] ids ? string.Join("-", ids) : throw new GuiException("StaleElement", "RuntimeIdUnavailable") { NoEffect = true };
+    }
+    private static int[] Ints(string runtimeId) => runtimeId.Split('-').Select(s => int.Parse(s, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+    private static object P(AutomationElement e, AutomationProperty p) => e.GetCachedPropertyValue(p, true);
+    public static string Token(DesktopWindow w, string runtimeId, string? parent, string automationId, string name, string controlType, string className, string frameworkId) =>
+        GuiProtocol.Hash(string.Join('\u001f', w.Process.Pid, w.Process.CreatedAt.UtcTicks, w.Handle, w.Generation, runtimeId, parent ?? "", automationId, name, controlType, className, frameworkId));
+    private static ObservationNode Node(Context ctx, AutomationElement e, string? parent)
+    {
+        var rid = Rid(e);
+        var automationId = P(e, AutomationElement.AutomationIdProperty) as string ?? "";
+        var type = P(e, AutomationElement.ControlTypeProperty) is ControlType ct ? ct.ProgrammaticName.Replace("ControlType.", "", StringComparison.Ordinal) : "Unknown";
+        var className = P(e, AutomationElement.ClassNameProperty) as string ?? "";
+        var framework = P(e, AutomationElement.FrameworkIdProperty) as string ?? "";
+        var name = P(e, AutomationElement.NameProperty) as string ?? "";
+        var password = P(e, AutomationElement.IsPasswordProperty) is true;
+        var patterns = PatternFlags.Where(p => P(e, p.Flag) is true).Select(p => p.Name).ToList();
+        if (LegacyFlag != null && P(e, LegacyFlag) is true) patterns.Add("LegacyIAccessible");
+        ElementValue value = new(false, null, "unavailable");
+        if (password) value = new(false, null, "password");
+        else if (patterns.Contains("Value") && P(e, ValuePattern.ValueProperty) is string text) value = text.Length > MaxValue ? new(false, null, "tooLarge") : new(true, text, null, "value");
+        var token = Token(ctx.Command.Window, rid, parent, automationId, name, type, className, framework);
+        PixelRect? bounds = null;
+        if (P(e, AutomationElement.BoundingRectangleProperty) is System.Windows.Rect r && !r.IsEmpty && r.Width > 0 && r.Height > 0)
+            bounds = new((int)Math.Round(r.X) - ctx.Origin.X, (int)Math.Round(r.Y) - ctx.Origin.Y, (int)Math.Round(r.Width), (int)Math.Round(r.Height));
+        string? Text(AutomationProperty property) => P(e, property) is string s && s.Length > 0 ? s : null;
+        return new ObservationNode(rid, parent, automationId, name.Length > MaxName ? name[..MaxName] : name, type, className, framework,
+            P(e, AutomationElement.IsEnabledProperty) is true, P(e, AutomationElement.IsOffscreenProperty) is true, value, patterns.ToArray(), token)
         {
-            PreparedAction refreshed;
-            try{refreshed=Revalidate(command,bound,actual,walker,command.Operation=="capabilities");}
-            catch(Exception e)when(e is ElementNotAvailableException or System.Runtime.InteropServices.COMException){boundTargets.Remove(BoundKey(command,command.RuntimeId));throw new GuiException("StaleElement");}
-            if(refreshed.Target.SnapshotToken!=command.SnapshotToken)throw new GuiException("StaleElement");boundTargets[BoundKey(command,command.RuntimeId)]=refreshed;
-            if(command.Operation=="capabilities"){if(command.IntendedOperation!=null&&DirectMutation(command.IntendedOperation))NativeAutomation.Bind(actual.Handle,bound.OriginalSearchRoot,refreshed.Target,refreshed.References[refreshed.Target.ElementId].GetRuntimeId());return new(refreshed.Observation,refreshed.Target){LookupKind="bound-reference"};}
-            return Dispatch(command,desktop,actual,refreshed.Observation,refreshed.Target,refreshed.References[command.RuntimeId]) with{LookupKind="bound-reference"};
+            NameTruncated = name.Length > MaxName ? true : null,
+            ToggleState = patterns.Contains("Toggle") && P(e, TogglePattern.ToggleStateProperty) is ToggleState ts ? ts.ToString().ToLowerInvariant() : null,
+            Selected = patterns.Contains("SelectionItem") && P(e, SelectionItemPattern.IsSelectedProperty) is bool selected ? selected : null,
+            ExpandState = patterns.Contains("ExpandCollapse") && P(e, ExpandCollapsePattern.ExpandCollapseStateProperty) is ExpandCollapseState es ? es switch { ExpandCollapseState.Expanded => "expanded", ExpandCollapseState.Collapsed => "collapsed", ExpandCollapseState.PartiallyExpanded => "partially", _ => "leaf" } : null,
+            Focused = P(e, AutomationElement.HasKeyboardFocusProperty) is true ? true : null,
+            RangeValue = patterns.Contains("RangeValue") && P(e, RangeValuePattern.ValueProperty) is double rv ? new(rv, P(e, RangeValuePattern.MinimumProperty) is double min ? min : 0, P(e, RangeValuePattern.MaximumProperty) is double max ? max : 0) : null,
+            HelpText = Text(AutomationElement.HelpTextProperty), ItemStatus = Text(AutomationElement.ItemStatusProperty), Bounds = bounds
+        };
+    }
+    private static void Keep(Context ctx, string rid, AutomationElement e)
+    {
+        if (elements.Count >= ElementRefs.Limit) foreach (var key in elements.Keys.Take(1024).ToArray()) elements.Remove(key);
+        elements[ctx.Command.Window.Handle + "|" + rid] = e;
+    }
+    private static Context Open(UiaCommand c)
+    {
+        var h = new IntPtr(c.Window.Handle);
+        if (!Native.IsWindow(h)) throw new GuiException("WindowNotFound", "WindowDestroyed") { NoEffect = true };
+        Native.GetWindowThreadProcessId(h, out var pid);
+        if (pid != c.Window.Process.Pid || Processes.Identify((int)pid) != c.Window.Process) throw new GuiException("WindowChanged") { NoEffect = true };
+        var origin = new Native.Point(); Native.ClientToScreen(h, ref origin);
+        var root = AutomationElement.FromHandle(h);
+        return new(c, root, string.Join("-", root.GetRuntimeId()), origin);
+    }
+    /// <summary>Finds and revalidates a referenced element. Stale when the runtime id, parent or descriptive properties changed.</summary>
+    private static (AutomationElement Element, ObservationNode Node) Resolve(Context ctx, ElementLocator locator)
+    {
+        if (locator.RuntimeId.StartsWith("virtual-", StringComparison.Ordinal))
+        {
+            if (!virtualItems.TryGetValue(locator.RuntimeId, out var item) || item.Node.SnapshotToken != locator.Token) throw new GuiException("StaleElement", "VirtualItemUnknown") { NoEffect = true };
+            return (item.Element, item.Node);
         }
-        AutomationElement root;
-        AutomationElement searchRoot;
-        if(command.SearchRootRuntimeId!=null)
+        try
         {
-            if(!boundTargets.TryGetValue(BoundKey(command,command.SearchRootRuntimeId),out var scope))throw new GuiException("StaleElement");
-            var refreshed=Revalidate(command,scope,actual,walker,false);if(refreshed.Target.SnapshotToken!=command.SearchRootSnapshotToken)throw new GuiException("StaleElement");searchRoot=refreshed.References[refreshed.Target.ElementId];root=refreshed.References[refreshed.Observation.Root];
-        }
-        else {root=AutomationElement.FromHandle(new IntPtr(actual.Handle));searchRoot=root;}
-        if(command.RootOnly)
-        {
-            var c=root.Current;var id=string.Join("-",root.GetRuntimeId());string? parent=null,parentToken=null;var name=c.IsPassword?"[password]":c.Name;var type=c.ControlType.ProgrammaticName.Replace("ControlType.","",StringComparison.Ordinal);
-            var token=GuiProtocol.Hash(Encoding.UTF8.GetBytes(GuiProtocol.Encode(new{actual.Process,command.Window.Generation,actual.Handle,id,parent,parentToken,c.AutomationId,name,type,c.ClassName,c.FrameworkId})));
-            var node=new ObservationNode(id,null,c.AutomationId,name,type,c.ClassName,c.FrameworkId,c.IsEnabled,c.IsOffscreen,new(false,null,c.IsPassword?"redacted":"not-requested"),[],token){DetailState="metadata-only"};
-            var rootObservation=new Observation(id,[node],DateTimeOffset.UtcNow,command.TreeView,false,"root-only",[],"unknown");Remember(command,rootObservation,node,new(){[id]=root});return new(rootObservation){LookupKind="root-only"};
-        }
-        if(prepared!=null && DirectMutation(command.Operation) && command.RuntimeId==prepared.Target.ElementId && command.SnapshotToken==prepared.Target.SnapshotToken && !command.RuntimeId.StartsWith("virtual-",StringComparison.Ordinal)
-            && command.ScopeSession==prepared.Command.ScopeSession && command.TreeView==prepared.Command.TreeView && command.Window.Handle==prepared.Command.Window.Handle && command.Window.Generation==prepared.Command.Window.Generation && command.Window.Process==prepared.Command.Window.Process && Stopwatch.GetElapsedTime(prepared.At).TotalMilliseconds<=1500)
-        {
-            // 부모·루트까지 실시간 신원을 다시 확인한다. 다른 요청/세션이나 오래된 preflight는 재사용하지 않는다.
-            var chain=new List<ObservationNode>();var prior=prepared.Target;
-            while(true){chain.Add(prior);if(chain.Count>17)throw new GuiException("SearchIncomplete");if(prior.ParentId==null)break;prior=prepared.Observation.Nodes.Single(n=>n.ElementId==prior.ParentId);}
-            chain.Reverse();string? parentToken=null;
-            foreach(var saved in chain)
+            var key = ctx.Command.Window.Handle + "|" + locator.RuntimeId;
+            AutomationElement? element;
+            if (locator.RuntimeId == ctx.RootId) element = ctx.Root;
+            else if (!elements.TryGetValue(key, out element))
             {
-                var live=prepared.References[saved.ElementId];var c=live.Current;var id=string.Join("-",live.GetRuntimeId());var parent=saved.ParentId;
-                if(id!=saved.ElementId)throw new GuiException("StaleElement");
-                if(parent!=null){var actualParent=walker.GetParent(live);if(actualParent==null||string.Join("-",actualParent.GetRuntimeId())!=parent)throw new GuiException("StaleElement");}
-                var name=c.IsPassword?"[password]":c.Name;var type=c.ControlType.ProgrammaticName.Replace("ControlType.","",StringComparison.Ordinal);
-                var token=GuiProtocol.Hash(Encoding.UTF8.GetBytes(GuiProtocol.Encode(new{actual.Process,command.Window.Generation,actual.Handle,id,parent,parentToken,c.AutomationId,name,type,c.ClassName,c.FrameworkId})));
-                if(token!=saved.SnapshotToken)throw new GuiException("StaleElement");parentToken=token;
+                using (IdOnly("raw").Activate()) element = ctx.Root.FindFirst(TreeScope.Subtree, new PropertyCondition(AutomationElement.RuntimeIdProperty, Ints(locator.RuntimeId)));
+                if (element == null) throw new GuiException("StaleElement", "ElementGone") { NoEffect = true };
             }
-            return Dispatch(command,desktop,actual,prepared.Observation,prepared.Target,prepared.References[prepared.Target.ElementId]);
-        }
-        if(command.Selector?.AutomationId is {Length:>0} exactId && (command.Operation is "find-element" or "wait-condition" or "capabilities" || DirectMutation(command.Operation)))
-        {
-            // ID 검색은 UIA 엔진에서 창 전체를 대상으로 수행한다. 경로 응답을 전체
-            // 트리라고 표시하지 않으며, 가상화가 있으면 완전한 검색으로 인정하지 않는다.
-            var idCondition=new PropertyCondition(AutomationElement.AutomationIdProperty,exactId);
-            var viewCondition=command.TreeView switch{"raw"=>Automation.RawViewCondition,"content"=>Automation.ContentViewCondition,_=>Automation.ControlViewCondition};
-            var nativeMatches=command.SearchRootRuntimeId==null?NativeAutomation.FindById(actual.Handle,exactId,command.TreeView,command.RuntimeId==null):null;
-            var found=new List<AutomationElement>();
-            if(nativeMatches!=null)foreach(var match in nativeMatches){var element=AutomationElement.FromHandle(new IntPtr(match.Handle));if(!element.GetRuntimeId().SequenceEqual(match.RuntimeId))throw new GuiException("StaleElement");found.Add(element);}
-            else
+            var refreshed = element.GetUpdatedCache(Request(TreeScope.Element, locator.TreeView));
+            if (Rid(refreshed) != locator.RuntimeId) throw new GuiException("StaleElement", "RuntimeIdChanged") { NoEffect = true };
+            string? parent = null;
+            if (locator.RuntimeId != ctx.RootId)
             {
-                var virtualCondition=new OrCondition(new PropertyCondition(AutomationElement.IsVirtualizedItemPatternAvailableProperty,true),new PropertyCondition(AutomationElement.IsItemContainerPatternAvailableProperty,true));
-                if(command.RuntimeId==null&&searchRoot.FindFirst(TreeScope.Subtree,virtualCondition)!=null)throw new GuiException("SearchIncomplete");
-                foreach(AutomationElement element in searchRoot.FindAll(TreeScope.Subtree,new AndCondition(viewCondition,idCondition)))found.Add(element);
+                var up = Walker(locator.TreeView).GetParent(refreshed, IdOnly(locator.TreeView));
+                parent = up == null ? null : Rid(up);
             }
-            if(found.Count>1024)throw new GuiException("SearchIncomplete");
-            if(found.Count>0)
-            {
-                var rootId=string.Join("-",root.GetRuntimeId());var pathNodes=new Dictionary<string,ObservationNode>();var pathRefs=new Dictionary<string,AutomationElement>();var candidates=new List<ObservationNode>();
-                foreach(AutomationElement match in found)
-                {
-                    var path=new List<AutomationElement>();var cursor=match;
-                    while(true){path.Add(cursor);if(path.Count>17)throw new GuiException("SearchIncomplete");if(string.Join("-",cursor.GetRuntimeId())==rootId)break;cursor=walker.GetParent(cursor)??throw new GuiException("StaleElement");}
-                    path.Reverse();string? parent=null,parentToken=null;
-                    foreach(var element in path)
-                    {
-                        var c=element.Current;var id=string.Join("-",element.GetRuntimeId());var name=c.IsPassword?"[password]":c.Name;var type=c.ControlType.ProgrammaticName.Replace("ControlType.","",StringComparison.Ordinal);
-                        var token=GuiProtocol.Hash(Encoding.UTF8.GetBytes(GuiProtocol.Encode(new{actual.Process,command.Window.Generation,actual.Handle,id,parent,parentToken,c.AutomationId,name,type,c.ClassName,c.FrameworkId})));
-                        var node=new ObservationNode(id,parent,c.AutomationId,name,type,c.ClassName,c.FrameworkId,c.IsEnabled,c.IsOffscreen,new(false,null,c.IsPassword?"redacted":"not-requested"),[],token){DetailState="metadata-only"};
-                        if(pathNodes.TryGetValue(id,out var seen)&&seen.SnapshotToken!=token)throw new GuiException("StaleElement");
-                        pathNodes[id]=node;pathRefs[id]=element;parent=id;parentToken=token;
-                    }
-                    candidates.Add(pathNodes[string.Join("-",match.GetRuntimeId())]);
-                }
-                var queryObservation=new Observation(rootId,pathNodes.Values.ToArray(),DateTimeOffset.UtcNow,command.TreeView,false,"selector-path",[],"not-virtualized"){QueryComplete=true};
-                var matches=candidates.Where(n=>ElementQuery.Matches(n,command.Selector,queryObservation)&&(command.RuntimeId==null||n.ElementId==command.RuntimeId)).Take(2).ToArray();
-                if(matches.Length>1)throw new GuiException("AmbiguousTarget");
-                if(matches.Length==1)
-                {
-                    var queryTarget=ReadDetails(matches[0],pathRefs[matches[0].ElementId]);
-                    if(command.RuntimeId!=null&&queryTarget.SnapshotToken!=command.SnapshotToken)throw new GuiException("StaleElement");
-                    pathNodes[queryTarget.ElementId]=queryTarget;queryObservation=queryObservation with{Nodes=pathNodes.Values.ToArray()};
-                    Remember(command,queryObservation,queryTarget,pathRefs);
-                    if(command.Operation=="capabilities"&&command.RuntimeId!=null)preparedAction=new(command,queryObservation,queryTarget,pathRefs,Stopwatch.GetTimestamp());
-                    if(AutomationOperations.ReadOnly(command.Operation))return new(queryObservation,queryTarget){LookupKind=command.SearchRootRuntimeId==null?"selector-path":"scoped-selector"};
-                    return Dispatch(command,desktop,actual,queryObservation,queryTarget,pathRefs[queryTarget.ElementId]);
-                }
-                if(command.RuntimeId!=null)throw new GuiException("StaleElement");
-            }
-            if(command.SearchRootRuntimeId!=null)
-            {
-                if(command.RuntimeId!=null)throw new GuiException("StaleElement");
-                if(command.Operation!="wait-condition")throw new GuiException("ElementNotFound");
-                var scope=boundTargets[BoundKey(command,command.SearchRootRuntimeId)];
-                return new(scope.Observation with{QueriedAt=DateTimeOffset.UtcNow,QueryComplete=true},null);
-            }
-            // 부재와 부모 조건 불일치는 기존의 제한된 전체 탐색으로 확인한다.
+            var node = Node(ctx, refreshed, parent);
+            if (node.SnapshotToken != locator.Token) throw new GuiException("StaleElement", "ElementChanged") { NoEffect = true };
+            Keep(ctx, locator.RuntimeId, refreshed);
+            return (refreshed, node);
         }
-        // 한 요소의 비민감 메타데이터와 패턴 참조를 한 번에 읽는다. Value/Name은 암호 여부를 확인한 뒤 읽는다.
-        // 한 번의 UIA 캐시 갱신으로 같은 시점의 트리를 가져온다. 요소마다 자식/형제
-        // 탐색을 왕복하면 대화 이력이 누적될수록 요청 기한을 소진한다.
-        // 출력 노드/깊이 제한과 별도 작업자 프로세스의 요청 기한은 그대로 적용한다.
-        var cache=new CacheRequest {TreeScope=TreeScope.Subtree,AutomationElementMode=AutomationElementMode.Full,TreeFilter=command.TreeView switch {"raw"=>Automation.RawViewCondition,"content"=>Automation.ContentViewCondition,_=>Automation.ControlViewCondition}};
-        foreach(var property in new[]{AutomationElement.RuntimeIdProperty,AutomationElement.AutomationIdProperty,AutomationElement.ControlTypeProperty,AutomationElement.ClassNameProperty,AutomationElement.FrameworkIdProperty,AutomationElement.IsEnabledProperty,AutomationElement.IsOffscreenProperty,AutomationElement.IsPasswordProperty})cache.Add(property);
-        foreach(var property in PatternAvailability)cache.Add(property);
-        cache.Add(AutomationElement.IsTextPatternAvailableProperty);
-        var nodes = new List<ObservationNode>(); var refs = new Dictionary<string, AutomationElement>();
-        var prefixCount=0;string? scopeParent=null;
-        if(command.SearchRootRuntimeId!=null)
+        catch (ElementNotAvailableException) { throw new GuiException("StaleElement", "ElementNotAvailable") { NoEffect = true }; }
+    }
+    private static ObservationNode Details(Context ctx, AutomationElement element, ObservationNode node)
+    {
+        if (node.Value.Available || node.Value.Reason == "password" || node.ElementId.StartsWith("virtual-", StringComparison.Ordinal)) return node;
+        var legacy = NativeAutomation.Legacy(ctx.Command.Window.Handle, Ints(node.ElementId));
+        var patterns = legacy.Available && !node.Patterns.Contains("LegacyIAccessible") ? node.Patterns.Append("LegacyIAccessible").ToArray() : node.Patterns;
+        if (legacy.Available && legacy.Value is { Length: > 0 } text) return node with { Value = new(true, text.Length > MaxValue ? text[..MaxValue] : text, null, "legacy"), Patterns = patterns };
+        return node with { Patterns = patterns };
+    }
+    public static UiaResult Execute(UiaCommand c)
+    {
+        var ctx = Open(c);
+        try
         {
-            var scope=boundTargets[BoundKey(command,command.SearchRootRuntimeId)];
-            foreach(var ancestor in scope.Observation.Nodes.Where(n=>n.ElementId!=scope.Target.ElementId)){nodes.Add(ancestor);refs[ancestor.ElementId]=scope.References[ancestor.ElementId];}
-            prefixCount=nodes.Count;scopeParent=scope.Target.ParentId;
+            return c.Operation switch
+            {
+                "inspect" => Inspect(ctx),
+                "find-element" => FindElements(ctx),
+                "wait-condition" => FindElements(ctx),
+                "capabilities" => Capabilities(ctx),
+                "find-item" => FindItem(ctx),
+                "read-grid" => ReadGrid(ctx),
+                "read-text" => ReadText(ctx),
+                "generate-selector" => GenerateSelector(ctx),
+                "hit-test" => HitTest(ctx),
+                "window-state" => WindowState(ctx),
+                _ when Operations.ElementMutation(c.Operation) => Mutate(ctx),
+                _ => throw new GuiException("UnsupportedOperation") { NoEffect = true }
+            };
         }
-        root=searchRoot.GetUpdatedCache(cache);
-        var queue = new Queue<(AutomationElement Element, string? Parent, int Depth)>(); queue.Enqueue((root, scopeParent, prefixCount));
-        var errors = new List<string>(); string? truncation = null; int valueCharacters=0;
-        while (queue.Count > 0 && nodes.Count < 1024)
+        catch (ElementNotAvailableException) { throw new GuiException("StaleElement", "ElementNotAvailable") { NoEffect = !DispatchStarted }; }
+    }
+    // ---------------------------------------------------------------- observation
+    private static UiaResult Inspect(Context ctx)
+    {
+        var a = ctx.Command.Arguments; var view = ctx.Command.TreeView;
+        var maxDepth = GuiProtocol.OptionalInt(a, "maxDepth") ?? 16;
+        AutomationElement root = ctx.Root; string? rootParent = null;
+        if (ctx.Command.SearchRoot != null) { var resolved = Resolve(ctx, ctx.Command.SearchRoot); root = resolved.Element; rootParent = resolved.Node.ParentId; }
+        // One cross-process call fetches the whole subtree with every property needed.
+        var cached = root.GetUpdatedCache(Request(TreeScope.Subtree, view));
+        var nodes = new List<ObservationNode>(); var depths = new Dictionary<string, int>();
+        var queue = new Queue<(AutomationElement Element, string? Parent, int Depth)>(); queue.Enqueue((cached, rootParent, 0));
+        string? truncation = null; var errors = 0;
+        while (queue.Count > 0)
         {
+            if (nodes.Count >= MaxNodes) { truncation = "node-limit"; break; }
             var (element, parent, depth) = queue.Dequeue();
             try
             {
-                var c = element.Cached; var id = string.Join("-", (int[])element.GetCachedPropertyValue(AutomationElement.RuntimeIdProperty));
-                var patterns = Patterns.Where((p,i) => element.GetCachedPropertyValue(PatternAvailability[i]) is true).Select(p => p.Name).ToArray();
-                ElementValue value = new(false, null, "unavailable");
-                if (c.IsPassword) value = new(false, null, "redacted");
-                else if (patterns.Contains("Value") && element.TryGetCurrentPattern(ValuePattern.Pattern, out var v)) value = new(true, ((ValuePattern)v).Current.Value, null);
-                else if (element.GetCachedPropertyValue(AutomationElement.IsTextPatternAvailableProperty) is true && element.TryGetCurrentPattern(TextPattern.Pattern, out var t)) value = new(true, ((TextPattern)t).DocumentRange.GetText(65537), null);
-                if (value.Text?.Length > 65536) value = new(false, null, "tooLarge");
-                if(value.Text!=null) { if(valueCharacters+value.Text.Length>65536) value=new(false,null,"tooLarge"); else valueCharacters+=value.Text.Length; }
-                var type = c.ControlType.ProgrammaticName.Replace("ControlType.", "", StringComparison.Ordinal);
-                var name = c.IsPassword ? "[password]" : element.Current.Name;
-                var token = GuiProtocol.Hash(Encoding.UTF8.GetBytes(GuiProtocol.Encode(new { actual.Process, command.Window.Generation, actual.Handle, id, parent, parentToken = nodes.FirstOrDefault(n => n.ElementId == parent)?.SnapshotToken, c.AutomationId, name, type, c.ClassName, c.FrameworkId })));
-                var toggle = patterns.Contains("Toggle") && element.TryGetCurrentPattern(TogglePattern.Pattern, out var tp) ? ((TogglePattern)tp).Current.ToggleState.ToString().ToLowerInvariant() : null;
-                nodes.Add(new(id, parent, c.AutomationId, name, type, c.ClassName, c.FrameworkId, c.IsEnabled, c.IsOffscreen, value, patterns, token, toggle)); refs[id] = element;
-                var children=element.CachedChildren;
-                if (depth >= 16 && children.Count>0) { truncation = "depth-limit"; continue; }
-                foreach(AutomationElement child in children)
-                {
-                    if (queue.Count + nodes.Count >= 2048) { truncation = "node-limit"; break; }
-                    queue.Enqueue((child, id, depth + 1));
-                }
+                var node = Node(ctx, element, parent); nodes.Add(node); depths[node.ElementId] = depth; Keep(ctx, node.ElementId, element);
+                var children = element.CachedChildren;
+                if (children.Count == 0) continue;
+                if (depth + 1 > maxDepth) { truncation ??= "depth-limit"; continue; }
+                foreach (AutomationElement child in children) queue.Enqueue((child, node.ElementId, depth + 1));
             }
-            catch (Exception e) when (e is ElementNotAvailableException or System.Runtime.InteropServices.COMException or InvalidOperationException)
-            { errors.Add("ProviderReadFailed"); }
+            catch (Exception e) when (e is ElementNotAvailableException or System.Runtime.InteropServices.COMException or InvalidOperationException) { errors++; }
         }
-        if (queue.Count > 0) truncation = "node-limit";
-        var observation = new Observation(nodes.FirstOrDefault()?.ElementId ?? "", nodes.ToArray(), DateTimeOffset.UtcNow, command.TreeView,
-            truncation == null && errors.Count == 0 && !nodes.Any(n => n.Patterns.Contains("VirtualizedItem") || n.Patterns.Contains("ItemContainer")), truncation ?? (nodes.Any(n => n.Patterns.Contains("VirtualizedItem") || n.Patterns.Contains("ItemContainer")) ? "virtualized-items-not-enumerated" : null), errors.Distinct().ToArray(), nodes.Any(n => n.Patterns.Contains("ItemContainer") || n.Patterns.Contains("VirtualizedItem")) ? "partial-or-virtualized" : "unknown");
-        ObservationNode? target = null;
-        if(command.SearchRootRuntimeId!=null)
+        // Breadth-first reading, depth-first output: every child line follows its parent.
+        var byParent = nodes.Skip(1).GroupBy(n => n.ParentId!).ToDictionary(g => g.Key, g => g.ToList());
+        var ordered = new List<ObservationNode>(nodes.Count); var stack = new Stack<ObservationNode>(); if (nodes.Count > 0) stack.Push(nodes[0]);
+        while (stack.Count > 0)
         {
-            if(!observation.Complete)throw new GuiException("SearchIncomplete");
-            var matching=nodes.Skip(prefixCount).Where(n=>ElementQuery.Matches(n,command.Selector!,observation)).Take(2).ToArray();
-            if(matching.Length>1)throw new GuiException("AmbiguousTarget");if(matching.Length==0&&command.Operation!="wait-condition")throw new GuiException("ElementNotFound");target=matching.SingleOrDefault();
-            observation=observation with{Root=nodes[0].ElementId,Complete=false,QueryComplete=true,TruncationReason="search-root-subtree"};
+            var n = stack.Pop(); ordered.Add(n);
+            if (byParent.TryGetValue(n.ElementId, out var list)) for (int i = list.Count - 1; i >= 0; i--) stack.Push(list[i]);
         }
-        else if (command.Selector != null&&command.RuntimeId==null) target = ElementQuery.Find(observation, command.Selector, command.Operation == "wait-condition");
-        if (command.RuntimeId != null && virtualItems.TryGetValue(command.RuntimeId, out var savedItem))
+        nodes = ordered;
+        IEnumerable<ObservationNode> kept = nodes;
+        var interactiveOnly = GuiProtocol.Flag(a, "interactiveOnly"); var includeOffscreen = GuiProtocol.Flag(a, "includeOffscreen", true);
+        if (interactiveOnly || !includeOffscreen)
         {
-            if (savedItem.Node.SnapshotToken != command.SnapshotToken || !nodes.Any(n => n.SnapshotToken == savedItem.ParentToken)) throw new GuiException("StaleElement");
-            target = savedItem.Node; refs[target.ElementId] = savedItem.Element; nodes.Add(target);
-            observation = observation with { Nodes = nodes.ToArray() };
+            var byId = nodes.ToDictionary(n => n.ElementId); var keep = new HashSet<string>();
+            foreach (var n in nodes)
+            {
+                var wanted = (includeOffscreen || !n.Offscreen) && (!interactiveOnly || n.Name.Length > 0 || n.Patterns.Any(p => p is not ("Text" or "Window" or "Selection" or "LegacyIAccessible")));
+                if (!wanted) continue;
+                for (string? id = n.ElementId; id != null && keep.Add(id); id = byId.GetValueOrDefault(id)?.ParentId) { }
+            }
+            keep.Add(nodes[0].ElementId);
+            kept = nodes.Where(n => keep.Contains(n.ElementId));
         }
-        else if (command.RuntimeId != null)
-        {
-            target = nodes.SingleOrDefault(n => n.ElementId == command.RuntimeId) ?? throw new GuiException("StaleElement");
-            if (target.SnapshotToken != command.SnapshotToken) throw new GuiException("StaleElement");
-        }
-        if (command.Operation == "find-item")
-        {
-            if (target == null || command.ItemName == null) throw new GuiException("InvalidItemQuery");
-            if (!refs[target.ElementId].TryGetCurrentPattern(ItemContainerPattern.Pattern, out var pattern)) throw new GuiException("PatternNotSupported");
-            var container = (ItemContainerPattern)pattern;
-            var item = container.FindItemByProperty(null, AutomationElement.NameProperty, command.ItemName);
-            if (item == null) throw new GuiException("ElementNotFound");
-            if (container.FindItemByProperty(item, AutomationElement.NameProperty, command.ItemName) != null) throw new GuiException("AmbiguousTarget");
-            var id = "virtual-" + Guid.NewGuid().ToString("N");
-            var token = GuiProtocol.Hash(Encoding.UTF8.GetBytes(command.Window.Process.ImageHash + target.SnapshotToken + id));
-            var supported = Patterns.Where(p => item.TryGetCurrentPattern(p.Pattern, out _)).Select(p => p.Name).ToArray();
-            var found = new ObservationNode(id, target.ElementId, "", command.ItemName, "ListItem", "", "", true, true, new(false, null, "unavailable"), supported, token);
-            if (virtualItems.Count >= 1024) throw new GuiException("VirtualItemBudgetExceeded");
-            virtualItems[id] = (item, found, target.SnapshotToken);
-            return new(observation with { Nodes = observation.Nodes.Append(found).ToArray() }, found);
-        }
-        if (AutomationOperations.ReadOnly(command.Operation))
-        {
-            if(target!=null)Remember(command,observation,target,refs);
-            else if(command.Operation=="inspect")foreach(var node in observation.Nodes)Remember(command,observation,node,refs);
-            if(command.Operation=="capabilities" && target!=null && command.RuntimeId!=null && !command.RuntimeId.StartsWith("virtual-",StringComparison.Ordinal))preparedAction=new(command,observation,target,refs,Stopwatch.GetTimestamp());
-            return new(observation, target);
-        }
-        if (target == null) throw new GuiException("ElementNotFound");
-        return Dispatch(command,desktop,actual,observation,target,refs[target.ElementId]);
+        var containers = nodes.Where(n => n.Patterns.Contains("ItemContainer")).ToArray();
+        return new UiaResult(kept.ToArray()) { Complete = truncation == null && errors == 0 && containers.Length == 0, TruncationReason = truncation ?? (errors > 0 ? "provider-errors" : containers.Length > 0 ? "virtualized-items-not-enumerated" : null), VirtualizedContainers = containers.Length > 0 ? containers : null };
     }
-    private static ObservationNode ReadDetails(ObservationNode node,AutomationElement element)
+    private static ControlType ControlTypeOf(string name) =>
+        controlTypes.TryGetValue(name, out var type) ? type : throw new GuiException("InvalidSelector", "UnknownControlType: " + name) { NoEffect = true };
+    private static readonly Dictionary<string, ControlType> controlTypes = typeof(ControlType).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+        .Where(f => f.FieldType == typeof(ControlType)).ToDictionary(f => f.Name, f => (ControlType)f.GetValue(null)!, StringComparer.Ordinal);
+    private sealed class Search(Context ctx, AutomationElement root, string view)
     {
-        var cache=new CacheRequest{TreeScope=TreeScope.Element,AutomationElementMode=AutomationElementMode.Full,TreeFilter=Automation.RawViewCondition};foreach(var property in PatternAvailability)cache.Add(property);cache.Add(AutomationElement.IsPasswordProperty);cache.Add(AutomationElement.IsTextPatternAvailableProperty);
-        var cached=element.GetUpdatedCache(cache);var patterns=Patterns.Where((p,index)=>cached.GetCachedPropertyValue(PatternAvailability[index]) is true).Select(p=>p.Name).ToArray();ElementValue value=new(false,null,"unavailable");
-        if(cached.Cached.IsPassword)value=new(false,null,"redacted");
-        else if(element.TryGetCurrentPattern(ValuePattern.Pattern,out var vp))value=new(true,((ValuePattern)vp).Current.Value,null);
-        else if(element.TryGetCurrentPattern(TextPattern.Pattern,out var tp))value=new(true,((TextPattern)tp).DocumentRange.GetText(65537),null);
-        if(value.Text?.Length>65536)value=new(false,null,"tooLarge");
-        var toggle=element.TryGetCurrentPattern(TogglePattern.Pattern,out var toggled)?((TogglePattern)toggled).Current.ToggleState.ToString().ToLowerInvariant():null;
-        return node with{Patterns=patterns,Value=value,ToggleState=toggle,DetailState="complete"};
-    }
-    private static UiaResult Dispatch(UiaCommand command,WindowsDesktop desktop,DesktopWindow actual,Observation observation,ObservationNode target,AutomationElement node)
-    {
-        var unrealizedMetadata=target.ElementId.StartsWith("virtual-",StringComparison.Ordinal)&&command.Operation is "realize-item" or "scroll-item-into-view";
-        if (!target.Enabled || !unrealizedMetadata&&!node.Current.IsEnabled) throw new GuiException("ElementDisabled");
-        T Pattern<T>(AutomationPattern pattern) => node.TryGetCurrentPattern(pattern, out var p) ? (T)p : throw new GuiException("PatternNotSupported");
-        // Identity is checked again immediately before provider dispatch.
-        if (!WindowRegistry.Same(actual, desktop.Identify(actual.Handle))) throw new GuiException("WindowChanged");
-        var nativeHandle=unrealizedMetadata?0:node.Current.NativeWindowHandle;
-        long patternRoot=actual.Handle;
-        if(nativeHandle!=0)
+        public readonly Context Ctx = ctx; public readonly AutomationElement Root = root; public readonly string View = view;
+        private readonly Dictionary<string, (AutomationElement Element, ObservationNode Node)?> parents = new();
+        private AutomationElement[]? containers;
+        public AutomationElement[] Containers()
         {
-            var handle=new IntPtr(nativeHandle);Native.GetWindowThreadProcessId(handle,out var pid);
-            if(pid==actual.Process.Pid && (handle==new IntPtr(actual.Handle)||IsChild(new IntPtr(actual.Handle),handle)))patternRoot=handle.ToInt64();
+            if (containers != null) return containers;
+            using (IdOnly("raw").Activate())
+                containers = Root.FindAll(TreeScope.Subtree, new PropertyCondition(AutomationElement.IsItemContainerPatternAvailableProperty, true)).Cast<AutomationElement>().ToArray();
+            return containers;
         }
-        switch (command.Operation)
+        public (AutomationElement Element, ObservationNode Node)? Parent(AutomationElement element, ObservationNode node)
         {
-            case "invoke": NativeAutomation.Invoke(patternRoot,node.GetRuntimeId()); break;
+            if (node.ParentId == null) return null;
+            if (parents.TryGetValue(node.ElementId, out var known)) return known;
+            var up = Walker(View).GetParent(element, Request(TreeScope.Element, View));
+            (AutomationElement, ObservationNode)? result = null;
+            if (up != null)
+            {
+                var upId = Rid(up);
+                string? grand = upId == Ctx.RootId ? null : Walker(View).GetParent(up, IdOnly(View)) is { } g ? Rid(g) : null;
+                result = (up, Node(Ctx, up, grand));
+            }
+            parents[node.ElementId] = result; return result;
+        }
+        /// <summary>True when an ancestor up to the window root exposes ItemContainer (a virtualized list, grid, combo box and so on).</summary>
+        public bool InsideContainer(AutomationElement element)
+        {
+            var cursor = element;
+            for (int i = 0; i < 64; i++)
+            {
+                var up = TreeWalker.RawViewWalker.GetParent(cursor, IdOnly("raw")); if (up == null) return false;
+                if (up.GetCachedPropertyValue(AutomationElement.IsItemContainerPatternAvailableProperty) is true) return true;
+                if (Rid(up) == Ctx.RootId) return false;
+                cursor = up;
+            }
+            return true;
+        }
+    }
+    private static string? ParentOf(Search s, AutomationElement e, string rid)
+    {
+        if (rid == s.Ctx.RootId) return null;
+        var up = Walker(s.View).GetParent(e, IdOnly(s.View)); return up == null ? null : Rid(up);
+    }
+    private static bool Matches(Search s, AutomationElement element, ObservationNode node, ElementSelector selector, int depth = 0)
+    {
+        if (depth > 8) return false;
+        if (selector.AutomationId != null && node.AutomationId != selector.AutomationId) return false;
+        if (selector.AutomationIdRegex != null && !GuiProtocol.SafeRegex(selector.AutomationIdRegex).IsMatch(node.AutomationId)) return false;
+        if (selector.ControlType != null && node.ControlType != selector.ControlType) return false;
+        if (selector.Name != null && node.Name != selector.Name) return false;
+        if (selector.NameContains != null && !node.Name.Contains(selector.NameContains, StringComparison.Ordinal)) return false;
+        if (selector.NameStartsWith != null && !node.Name.StartsWith(selector.NameStartsWith, StringComparison.Ordinal)) return false;
+        if (selector.NameRegex != null && !GuiProtocol.SafeRegex(selector.NameRegex).IsMatch(node.Name)) return false;
+        if (selector.ClassName != null && node.ClassName != selector.ClassName) return false;
+        if (selector.FrameworkId != null && node.FrameworkId != selector.FrameworkId) return false;
+        if (selector.Parent != null)
+        {
+            var parent = s.Parent(element, node);
+            if (parent == null || !Matches(s, parent.Value.Element, parent.Value.Node, selector.Parent, depth + 1)) return false;
+        }
+        if (selector.AncestorAutomationId != null)
+        {
+            var cursor = s.Parent(element, node); var found = false;
+            for (int i = 0; cursor != null && i < 64; i++)
+            {
+                if (cursor.Value.Node.AutomationId == selector.AncestorAutomationId) { found = true; break; }
+                cursor = s.Parent(cursor.Value.Element, cursor.Value.Node);
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+    /// <summary>Selector search with the virtualization rule: outside virtualized containers an automationId match is
+    /// accepted as unique; anything else inside a window with containers needs completeness "realized".</summary>
+    private static SelectorResult Find(Search s, ElementSelector selector, string completeness, bool nearest)
+    {
+        var conditions = new List<Condition> { View(s.View) };
+        if (selector.AutomationId != null) conditions.Add(new PropertyCondition(AutomationElement.AutomationIdProperty, selector.AutomationId));
+        if (selector.Name != null) conditions.Add(new PropertyCondition(AutomationElement.NameProperty, selector.Name));
+        if (selector.ControlType != null) conditions.Add(new PropertyCondition(AutomationElement.ControlTypeProperty, ControlTypeOf(selector.ControlType)));
+        if (selector.ClassName != null) conditions.Add(new PropertyCondition(AutomationElement.ClassNameProperty, selector.ClassName));
+        if (selector.FrameworkId != null) conditions.Add(new PropertyCondition(AutomationElement.FrameworkIdProperty, selector.FrameworkId));
+        AutomationElementCollection found;
+        using (Request(TreeScope.Element, s.View).Activate())
+            found = s.Root.FindAll(TreeScope.Subtree, conditions.Count == 1 ? conditions[0] : new AndCondition(conditions.ToArray()));
+        if (found.Count > 4096) return new(null, new("SearchIncomplete", "TooManyCandidates"));
+        var matches = new List<(AutomationElement Element, ObservationNode Node)>();
+        foreach (AutomationElement element in found)
+        {
+            try
+            {
+                var rid = Rid(element);
+                var node = Node(s.Ctx, element, ParentOf(s, element, rid));
+                if (Matches(s, element, node, selector)) { matches.Add((element, node)); Keep(s.Ctx, rid, element); }
+            }
+            catch (ElementNotAvailableException) { }
+        }
+        var hasContainers = s.Containers().Length > 0;
+        string scope;
+        if (completeness == "realized") scope = "realized-only";
+        else if (!hasContainers) scope = "complete";
+        else if (selector.AutomationId != null && matches.Count == 1 && selector.Index == null && !s.InsideContainer(matches[0].Element)) scope = "outside-virtualized";
+        else if (selector.AutomationId != null && matches.Count == 0) return new(null, new("SearchIncomplete", "NotFoundOutsideVirtualized", new { virtualizedContainers = s.Containers().Length }));
+        else return new(null, new("SearchIncomplete", "VirtualizedContainerPresent", new { virtualizedContainers = s.Containers().Length, hint = "use completeness: realized, or an automationId outside the container" }), matches.Count);
+        if (matches.Count == 0)
+            return new(null, new("ElementNotFound", "ElementNotFound", nearest ? new { nearest = Nearest(s, selector) } : null), 0, scope);
+        if (selector.Index is { } index)
+        {
+            if (index >= matches.Count) return new(null, new("ElementNotFound", "IndexOutOfRange", new { matchCount = matches.Count }), matches.Count, scope);
+            var chosen = matches[index];
+            return new(Details(s.Ctx, chosen.Element, chosen.Node), null, matches.Count, scope) { Path = PathOf(s, chosen.Element, chosen.Node) };
+        }
+        if (matches.Count > 1)
+        {
+            var candidates = matches.Take(5).Select(m => m.Node).ToArray();
+            var parentNames = matches.Take(5).Select(m => s.Parent(m.Element, m.Node)?.Node.Name ?? "").ToArray();
+            return new(null, new("AmbiguousTarget", "AmbiguousTarget", new { matchCount = matches.Count, candidates, parentNames }), matches.Count, scope);
+        }
+        return new(Details(s.Ctx, matches[0].Element, matches[0].Node), null, 1, scope) { Path = PathOf(s, matches[0].Element, matches[0].Node) };
+    }
+    private static ObservationNode[] PathOf(Search s, AutomationElement element, ObservationNode node)
+    {
+        var path = new List<ObservationNode>(); var cursor = s.Parent(element, node);
+        for (int i = 0; cursor != null && i < 32; i++) { path.Add(cursor.Value.Node); cursor = s.Parent(cursor.Value.Element, cursor.Value.Node); }
+        path.Reverse(); return path.ToArray();
+    }
+    private static object[] Nearest(Search s, ElementSelector selector)
+    {
+        var wanted = (selector.AutomationId ?? selector.AutomationIdRegex ?? selector.Name ?? selector.NameContains ?? selector.NameStartsWith ?? selector.NameRegex ?? "").ToLowerInvariant();
+        if (wanted.Length == 0) return [];
+        AutomationElementCollection all;
+        var cache = new CacheRequest { TreeScope = TreeScope.Element, TreeFilter = View(s.View) };
+        cache.Add(AutomationElement.AutomationIdProperty); cache.Add(AutomationElement.NameProperty); cache.Add(AutomationElement.ControlTypeProperty);
+        using (cache.Activate()) all = s.Root.FindAll(TreeScope.Subtree, View(s.View));
+        return all.Cast<AutomationElement>().Take(MaxNodes).Select(e =>
+        {
+            var id = e.GetCachedPropertyValue(AutomationElement.AutomationIdProperty) as string ?? ""; var name = e.GetCachedPropertyValue(AutomationElement.NameProperty) as string ?? "";
+            var type = e.GetCachedPropertyValue(AutomationElement.ControlTypeProperty) is ControlType ct ? ct.ProgrammaticName.Replace("ControlType.", "", StringComparison.Ordinal) : "";
+            return (Score: Math.Max(Similarity(wanted, id.ToLowerInvariant()), Similarity(wanted, name.ToLowerInvariant())), Value: (object)new { automationId = id, name = name.Length > 80 ? name[..80] : name, controlType = type });
+        }).Where(x => x.Score > 0.3).OrderByDescending(x => x.Score).Take(3).Select(x => x.Value).ToArray();
+    }
+    private static double Similarity(string a, string b)
+    {
+        if (a.Length == 0 || b.Length == 0) return 0;
+        if (a == b) return 1; if (b.Contains(a) || a.Contains(b)) return 0.8;
+        var d = new int[a.Length + 1, b.Length + 1];
+        for (int i = 0; i <= a.Length; i++) d[i, 0] = i; for (int j = 0; j <= b.Length; j++) d[0, j] = j;
+        for (int i = 1; i <= a.Length; i++) for (int j = 1; j <= b.Length; j++) d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+        return 1 - (double)d[a.Length, b.Length] / Math.Max(a.Length, b.Length);
+    }
+    private static Search NewSearch(Context ctx)
+    {
+        var root = ctx.Root;
+        if (ctx.Command.SearchRoot != null) root = Resolve(ctx, ctx.Command.SearchRoot).Element;
+        return new(ctx, root, ctx.Command.TreeView);
+    }
+    private static UiaResult FindElements(Context ctx)
+    {
+        var s = NewSearch(ctx); var nearest = ctx.Command.Operation == "find-element";
+        var selectors = ctx.Command.Selectors ?? [ctx.Command.Selector ?? throw new GuiException("InvalidSelector") { NoEffect = true }];
+        var results = selectors.Select(selector => Find(s, selector, ctx.Command.Completeness, nearest)).ToArray();
+        var containers = ctx.Command.Completeness == "realized" && s.Containers().Length > 0
+            ? s.Containers().Take(16).Select(e => { var rid = Rid(e); Keep(ctx, rid, e); var full = e.GetUpdatedCache(Request(TreeScope.Element, s.View)); return Node(ctx, full, ParentOf(s, full, rid)); }).ToArray() : null;
+        return new UiaResult([], results[0].Target) { Results = results, MatchCount = results[0].MatchCount, UniquenessScope = results[0].UniquenessScope, VirtualizedContainers = containers };
+    }
+    private static UiaResult Capabilities(Context ctx)
+    {
+        if (ctx.Command.Elements is { } list)
+        {
+            var results = list.Select(l =>
+            {
+                try { var r = Resolve(ctx, l); return new SelectorResult(Details(ctx, r.Element, r.Node), null, 1); }
+                catch (GuiException e) { return new SelectorResult(null, new(e.Code, e.Message, e.Details)); }
+            }).ToArray();
+            return new UiaResult([], results[0].Target) { Results = results };
+        }
+        if (ctx.Command.Target != null) { var r = Resolve(ctx, ctx.Command.Target); return new UiaResult([], Details(ctx, r.Element, r.Node)); }
+        var found = Find(NewSearch(ctx), ctx.Command.Selector!, ctx.Command.Completeness, true);
+        if (found.Error != null) throw new GuiException(found.Error.Code, found.Error.Message, found.Error.Data) { NoEffect = true };
+        return new UiaResult([], found.Target) { MatchCount = found.MatchCount, UniquenessScope = found.UniquenessScope };
+    }
+    private static UiaResult FindItem(Context ctx)
+    {
+        var (container, node) = Resolve(ctx, ctx.Command.Target!);
+        if (!container.TryGetCurrentPattern(ItemContainerPattern.Pattern, out var pattern)) throw new GuiException("PatternNotSupported") { NoEffect = true };
+        var itemName = GuiProtocol.Text(ctx.Command.Arguments, "itemName");
+        var items = (ItemContainerPattern)pattern;
+        var item = items.FindItemByProperty(null, AutomationElement.NameProperty, itemName) ?? throw new GuiException("ElementNotFound") { NoEffect = true };
+        if (items.FindItemByProperty(item, AutomationElement.NameProperty, itemName) != null) throw new GuiException("AmbiguousTarget") { NoEffect = true };
+        var id = "virtual-" + Guid.NewGuid().ToString("N")[..16];
+        var supported = new List<string>();
+        foreach (var (pattern2, name) in new[] { (SelectionItemPattern.Pattern, "SelectionItem"), (ScrollItemPattern.Pattern, "ScrollItem"), (VirtualizedItemPattern.Pattern, "VirtualizedItem"), (InvokePattern.Pattern, "Invoke"), (TogglePattern.Pattern, "Toggle"), (ExpandCollapsePattern.Pattern, "ExpandCollapse") })
+            if (item.TryGetCurrentPattern(pattern2, out _)) supported.Add(name);
+        var token = GuiProtocol.Hash(node.SnapshotToken + "|" + id + "|" + itemName);
+        var found = new ObservationNode(id, node.ElementId, "", itemName, "ListItem", "", "", true, true, new(false, null, "unrealized"), supported.ToArray(), token);
+        if (virtualItems.Count >= 1024) foreach (var key in virtualItems.Keys.Take(256).ToArray()) virtualItems.Remove(key);
+        virtualItems[id] = (item, found, node.SnapshotToken);
+        return new UiaResult([node, found], found);
+    }
+    private static UiaResult ReadGrid(Context ctx)
+    {
+        var (element, node) = Resolve(ctx, ctx.Command.Target!);
+        if (!element.TryGetCurrentPattern(GridPattern.Pattern, out var g)) throw new GuiException("PatternNotSupported") { NoEffect = true };
+        var grid = (GridPattern)g; var a = ctx.Command.Arguments;
+        int rows = grid.Current.RowCount, columns = grid.Current.ColumnCount;
+        int startRow = GuiProtocol.OptionalInt(a, "startRow") ?? 0, startColumn = GuiProtocol.OptionalInt(a, "startColumn") ?? 0;
+        int rowCount = Math.Min(GuiProtocol.OptionalInt(a, "rowCount") ?? 50, Math.Max(0, rows - startRow));
+        int columnCount = Math.Min(GuiProtocol.OptionalInt(a, "columnCount") ?? columns, Math.Max(0, columns - startColumn));
+        if ((long)rowCount * columnCount > 500) rowCount = Math.Max(1, 500 / Math.Max(1, columnCount));
+        string[]? headers = null;
+        if (element.TryGetCurrentPattern(TablePattern.Pattern, out var t))
+            try { headers = ((TablePattern)t).Current.GetColumnHeaders().Select(h => h.Current.Name).Skip(startColumn).Take(columnCount).ToArray(); } catch (Exception e) when (e is InvalidOperationException or ElementNotAvailableException) { }
+        var cells = new List<string?[]>();
+        for (int r = startRow; r < startRow + rowCount; r++)
+        {
+            var row = new string?[columnCount];
+            for (int col = 0; col < columnCount; col++)
+            {
+                try
+                {
+                    var cell = grid.GetItem(r, startColumn + col);
+                    row[col] = cell.TryGetCurrentPattern(ValuePattern.Pattern, out var v) ? ((ValuePattern)v).Current.Value : cell.Current.Name;
+                }
+                catch (Exception e) when (e is InvalidOperationException or ElementNotAvailableException or ArgumentException) { row[col] = null; }
+            }
+            cells.Add(row);
+        }
+        return new UiaResult([], node) { Data = JsonSerializer.SerializeToElement(new { rowCount = rows, columnCount = columns, startRow, startColumn, columnHeaders = headers, rows = cells }, GuiProtocol.Json) };
+    }
+    private static UiaResult ReadText(Context ctx)
+    {
+        var (element, node) = Resolve(ctx, ctx.Command.Target!); var a = ctx.Command.Arguments;
+        var max = GuiProtocol.OptionalInt(a, "maxLength") ?? MaxValue;
+        string text; string source;
+        if (element.TryGetCurrentPattern(TextPattern.Pattern, out var p))
+        {
+            var pattern = (TextPattern)p;
+            if (GuiProtocol.Flag(a, "selectionOnly")) text = string.Join("\n", pattern.GetSelection().Select(r => r.GetText(max)));
+            else text = pattern.DocumentRange.GetText(max + 1);
+            source = "text";
+        }
+        else if (node.Value.Available) { text = node.Value.Text ?? ""; source = "value"; }
+        else { var detailed = Details(ctx, element, node); if (!detailed.Value.Available) throw new GuiException("PatternNotSupported", "NoTextOrValue") { NoEffect = true }; text = detailed.Value.Text ?? ""; source = detailed.Value.Source ?? "legacy"; }
+        var truncated = text.Length > max; if (truncated) text = text[..max];
+        return new UiaResult([], node) { Data = JsonSerializer.SerializeToElement(new { text, source, truncated }, GuiProtocol.Json) };
+    }
+    /// <summary>Shortest selector that matches exactly this element in the window, plus alternatives. Each candidate is checked.</summary>
+    private static UiaResult GenerateSelector(Context ctx)
+    {
+        var (element, node) = Resolve(ctx, ctx.Command.Target!);
+        var s = new Search(ctx, ctx.Root, ctx.Command.Target!.TreeView);
+        var parent = s.Parent(element, node)?.Node;
+        var candidates = new List<ElementSelector>();
+        if (node.AutomationId.Length > 0) candidates.Add(new(AutomationId: node.AutomationId));
+        if (node.Name.Length > 0) candidates.Add(new(ControlType: node.ControlType, Name: node.Name));
+        if (node.AutomationId.Length > 0) candidates.Add(new(AutomationId: node.AutomationId, ControlType: node.ControlType));
+        if (parent != null)
+        {
+            var parentSelector = parent.AutomationId.Length > 0 ? new ElementSelector(AutomationId: parent.AutomationId) : parent.Name.Length > 0 ? new ElementSelector(ControlType: parent.ControlType, Name: parent.Name) : null;
+            if (parentSelector != null)
+            {
+                if (node.Name.Length > 0) candidates.Add(new(ControlType: node.ControlType, Name: node.Name, Parent: parentSelector));
+                candidates.Add(new(ControlType: node.ControlType, Parent: parentSelector));
+            }
+        }
+        if (node.Name.Length > 0) candidates.Add(new(ControlType: node.ControlType, Name: node.Name, Index: 0));
+        candidates.Add(new(ControlType: node.ControlType, Index: 0));
+        var unique = new List<(ElementSelector Selector, string? Scope)>();
+        foreach (var candidate in candidates)
+        {
+            if (candidate.Index != null)
+            {
+                var indexed = FindIndex(s, candidate, node.ElementId);
+                if (indexed != null) unique.Add((candidate with { Index = indexed }, "indexed"));
+                continue;
+            }
+            var result = Find(s, candidate, "default", false);
+            if (result.Target?.ElementId == node.ElementId && !unique.Any(u => u.Selector == candidate)) unique.Add((candidate, result.UniquenessScope));
+        }
+        if (unique.Count == 0) throw new GuiException("SelectorUnavailable", "NoStableSelector") { NoEffect = true };
+        return new UiaResult([], node) { Data = JsonSerializer.SerializeToElement(new { selector = unique[0].Selector, uniquenessScope = unique[0].Scope, alternatives = unique.Skip(1).Select(u => new { selector = u.Selector, uniquenessScope = u.Scope }).ToArray() }, GuiProtocol.Json) };
+    }
+    private static int? FindIndex(Search s, ElementSelector selector, string runtimeId)
+    {
+        var conditions = new List<Condition> { View(s.View), new PropertyCondition(AutomationElement.ControlTypeProperty, ControlTypeOf(selector.ControlType!)) };
+        if (selector.Name != null) conditions.Add(new PropertyCondition(AutomationElement.NameProperty, selector.Name));
+        if (s.Containers().Length > 0) return null;
+        AutomationElementCollection found;
+        using (IdOnly(s.View).Activate()) found = s.Root.FindAll(TreeScope.Subtree, new AndCondition(conditions.ToArray()));
+        for (int i = 0; i < found.Count; i++) if (Rid(found[i]) == runtimeId) return i;
+        return null;
+    }
+    private static UiaResult HitTest(Context ctx)
+    {
+        var point = ctx.Command.HitPoint!;
+        var hit = AutomationElement.FromPoint(new System.Windows.Point(point.X, point.Y));
+        var target = ctx.Command.Target!.RuntimeId;
+        var cursor = hit; var inside = false;
+        for (int i = 0; cursor != null && i < 64; i++)
+        {
+            if (string.Join("-", cursor.GetRuntimeId()) == target) { inside = true; break; }
+            cursor = TreeWalker.RawViewWalker.GetParent(cursor);
+        }
+        object? blockedBy = null;
+        if (!inside)
+        {
+            var top = Native.GetAncestor(Native.WindowFromPoint(new Native.Point { X = point.X, Y = point.Y }), 2);
+            var title = new System.Text.StringBuilder(512); Native.GetWindowText(top, title, title.Capacity);
+            blockedBy = new { name = hit.Current.Name, controlType = hit.Current.ControlType.ProgrammaticName.Replace("ControlType.", "", StringComparison.Ordinal), windowTitle = title.ToString() };
+        }
+        return new UiaResult([]) { Data = JsonSerializer.SerializeToElement(new { inside, blockedBy }, GuiProtocol.Json) };
+    }
+    private static UiaResult WindowState(Context ctx)
+    {
+        var state = GuiProtocol.Text(ctx.Command.Arguments, "state");
+        if (ctx.Root.TryGetCurrentPattern(WindowPattern.Pattern, out var p))
+        {
+            var window = (WindowPattern)p; DispatchStarted = true;
+            switch (state)
+            {
+                case "close": window.Close(); break;
+                case "minimize": window.SetWindowVisualState(WindowVisualState.Minimized); break;
+                case "maximize": window.SetWindowVisualState(WindowVisualState.Maximized); break;
+                default: window.SetWindowVisualState(WindowVisualState.Normal); break;
+            }
+            return new UiaResult([]) { DispatchKind = "window-pattern" };
+        }
+        throw new GuiException("PatternNotSupported", "WindowPatternUnavailable") { NoEffect = true };
+    }
+    // ---------------------------------------------------------------- mutation
+    /// <summary>Revalidation, state checks, expected value check and dispatch in one worker call.</summary>
+    private static UiaResult Mutate(Context ctx)
+    {
+        var c = ctx.Command; var a = c.Arguments;
+        var (element, observed) = Resolve(ctx, c.Target ?? throw new GuiException("InvalidRequest") { NoEffect = true });
+        var node = Details(ctx, element, observed);
+        var unrealized = node.ElementId.StartsWith("virtual-", StringComparison.Ordinal);
+        if (!node.Enabled) throw new GuiException("ElementDisabled") { NoEffect = true };
+        var descriptor = Operations.Get(c.Operation);
+        foreach (var required in descriptor.RequiredPatterns)
+            if (!node.Patterns.Contains(required)) throw new GuiException("PatternNotSupported", "PatternNotSupported: " + required) { NoEffect = true };
+        var handle = c.Window.Handle; var id = unrealized ? [] : Ints(node.ElementId);
+        bool native;
+        switch (c.Operation)
+        {
             case "set-value":
-                if (node.Current.IsPassword) throw new GuiException("PasswordTargetDenied");
-                var value = Pattern<ValuePattern>(ValuePattern.Pattern); if (value.Current.IsReadOnly) throw new GuiException("ValueReadOnly"); NativeAutomation.SetValue(patternRoot, node.GetRuntimeId(), command.Value!); break;
-            case "select-item": NativeAutomation.Select(patternRoot,node.GetRuntimeId()); break;
-            case "set-toggle": NativeAutomation.Toggle(patternRoot,node.GetRuntimeId(),command.DesiredState=="on");break;
-            case "set-expanded": NativeAutomation.Expand(patternRoot,node.GetRuntimeId(),command.Expanded==true);break;
-            case "realize-item": Pattern<VirtualizedItemPattern>(VirtualizedItemPattern.Pattern).Realize(); break;
-            case "scroll-item-into-view": Pattern<ScrollItemPattern>(ScrollItemPattern.Pattern).ScrollIntoView(); break;
-            case "scroll-container": NativeAutomation.Scroll(patternRoot,node.GetRuntimeId(),command.Horizontal!.Value,command.Vertical!.Value); break;
-            default: throw new GuiException("UnsupportedOperation");
+                if (P(element, ValuePattern.IsReadOnlyProperty) is true) throw new GuiException("ValueReadOnly") { NoEffect = true };
+                if (GuiProtocol.OptionalText(a, "expectedValueHash") is { } expected && (!node.Value.Available || GuiProtocol.Hash(node.Value.Text ?? "") != expected)) throw new GuiException("ValueConflict") { NoEffect = true };
+                var value = a.GetProperty("value").GetString()!;
+                native = !unrealized && NativeAutomation.SetValue(handle, id, value);
+                if (!native) { var vp = (ValuePattern)element.GetCurrentPattern(ValuePattern.Pattern); DispatchStarted = true; vp.SetValue(value); }
+                break;
+            case "set-range-value":
+                if (P(element, RangeValuePattern.IsReadOnlyProperty) is true) throw new GuiException("ValueReadOnly") { NoEffect = true };
+                var target = a.GetProperty("value").GetDouble();
+                if (node.RangeValue is { } range && (target < range.Minimum || target > range.Maximum)) throw new GuiException("InvalidRangeValue", "OutOfRange", new { range.Minimum, range.Maximum }) { NoEffect = true };
+                native = !unrealized && NativeAutomation.SetRange(handle, id, target);
+                if (!native) { var rp = (RangeValuePattern)element.GetCurrentPattern(RangeValuePattern.Pattern); DispatchStarted = true; rp.SetValue(target); }
+                break;
+            case "invoke":
+                native = !unrealized && NativeAutomation.Invoke(handle, id);
+                if (!native) { var ip = (InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern); DispatchStarted = true; ip.Invoke(); }
+                break;
+            case "select-item":
+                native = !unrealized && NativeAutomation.Select(handle, id);
+                if (!native) { var sp = (SelectionItemPattern)element.GetCurrentPattern(SelectionItemPattern.Pattern); DispatchStarted = true; sp.Select(); }
+                break;
+            case "set-toggle":
+                var desired = GuiProtocol.Text(a, "desiredState") switch { "on" => 1, "off" => 0, _ => 2 };
+                native = !unrealized && NativeAutomation.Toggle(handle, id, desired);
+                if (!native)
+                {
+                    var tp = (TogglePattern)element.GetCurrentPattern(TogglePattern.Pattern); DispatchStarted = true;
+                    for (int i = 0; i < 3 && (int)tp.Current.ToggleState != desired; i++) tp.Toggle();
+                    if ((int)tp.Current.ToggleState != desired) throw new GuiException("PostconditionFailed", "ToggleStateNotReached");
+                }
+                break;
+            case "set-expanded":
+                var expand = a.GetProperty("expanded").GetBoolean();
+                native = !unrealized && NativeAutomation.Expand(handle, id, expand);
+                if (!native) { var ep = (ExpandCollapsePattern)element.GetCurrentPattern(ExpandCollapsePattern.Pattern); DispatchStarted = true; if (expand) ep.Expand(); else ep.Collapse(); }
+                break;
+            case "scroll-container":
+                double h = a.GetProperty("horizontal").GetDouble(), v = a.GetProperty("vertical").GetDouble();
+                native = !unrealized && NativeAutomation.Scroll(handle, id, h, v);
+                if (!native) { var scp = (ScrollPattern)element.GetCurrentPattern(ScrollPattern.Pattern); DispatchStarted = true; scp.SetScrollPercent(h, v); }
+                break;
+            case "set-focus":
+                native = !unrealized && NativeAutomation.SetFocus(handle, id);
+                if (!native) { DispatchStarted = true; element.SetFocus(); }
+                break;
+            case "legacy-default-action":
+                native = !unrealized && NativeAutomation.DefaultAction(handle, id);
+                if (!native) throw new GuiException("StaleElement", "NativeElementNotFound") { NoEffect = true };
+                break;
+            case "realize-item":
+                native = false; var vip = (VirtualizedItemPattern)element.GetCurrentPattern(VirtualizedItemPattern.Pattern); DispatchStarted = true; vip.Realize();
+                break;
+            case "scroll-item-into-view":
+                native = !unrealized && NativeAutomation.ScrollIntoView(handle, id);
+                if (!native) { var sip = (ScrollItemPattern)element.GetCurrentPattern(ScrollItemPattern.Pattern); DispatchStarted = true; sip.ScrollIntoView(); }
+                break;
+            default: throw new GuiException("UnsupportedOperation") { NoEffect = true };
         }
-        return new(observation, target, "dispatched"){DispatchKind=command.Operation is "realize-item" or "scroll-item-into-view"?"provider-pattern":NativeAutomation.LastDispatchKind};
+        return new UiaResult([], node) { DispatchKind = native ? NativeAutomation.LastDispatchKind : "managed-pattern" };
     }
 }

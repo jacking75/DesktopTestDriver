@@ -1,125 +1,153 @@
 ﻿# DesktopTestDriver
 
-[한국어 README](README_kr.md)
+> **Use only on trusted networks and PCs. The connection is not encrypted and has no authentication or permission checks.**
 
-**DesktopTestDriver reduces repetitive UI searches, waiting, retry handling, and cleanup in Windows GUI E2E tests.** When a coding agent has to locate buttons from scratch, wait a fixed duration, and guess whether an action ran after losing its response, tests become slower and less reliable. DesktopTestDriver reuses validated UI references, waits for expected conditions, and retrieves original execution records to **reduce unnecessary work and support more accurate test verdicts**.
+**DesktopTestDriver lets coding agents (Claude Code, Codex and others) and C# test code find, operate and read Windows GUIs by UI element instead of screen coordinates.** It drives buttons, inputs and lists through Windows UI Automation (UIA) by ID and name, and uses real keyboard and mouse input only when asked. The goal is to test GUIs faster and more reliably than computer use (screenshots plus coordinates).
 
-Target checks, duplicate prevention, remote requests, and owned-process cleanup become shared capabilities instead of infrastructure you rebuild for each test. Your coding agent or test runner can focus on **which user flows to test and what counts as success**. The same request interface works on local and remote Windows PCs.
+[GUI test guide](docs/gui-test-guide.md) · [Command and request reference](docs/agent-usage.md) · [한국어 README](README_kr.md)
 
-![DesktopTestDriver benefits: six before-and-after comparisons, condition-based waiting, and shared test infrastructure](docs/assets/e2e-benefits-infographic-en.png)
+## At a glance
 
-[GUI test guide (Korean)](docs/gui-test-guide.md) · [Command, setup, and API reference (Korean)](docs/agent-usage.md)
+**Where it fits**
 
-## What changes when you use it?
+| Target | Examples |
+|---|---|
+| Windows desktop apps | Internal tools, launchers, admin programs and installers built with WinForms, WPF, WinUI or Win32 |
+| Windows' own GUI | Settings (`ms-settings:`), Control Panel, `.msc` consoles, File Explorer windows |
+| When | Checking an agent-built feature end to end on a real screen, repeating a flow as a regression test, testing several Windows PCs from one place |
 
-This comparison assumes manual screen/coordinate operations or individual scripts without an established target-validation, waiting, and recovery layer. Other automation tools or custom code can provide these capabilities too. DesktopTestDriver helps reduce the effort of implementing and maintaining that shared foundation yourself.
+**What it offers**
 
-| Test activity | Manual operations / individual scripts | With DesktopTestDriver |
+| Feature | Details |
+|---|---|
+| Element-level actions | Find targets by `automationId`, name or type (regex, contains, index) and read values as plain strings, independent of window position, resolution and DPI |
+| Short observations | `inspect` returns a compact tree, one element per line, with references like `e12` and 12-character tokens |
+| Condition waits | The tool waits until a value appears (up to 30 s; `anyOf` waits for success or an error dialog at once). A timeout returns `satisfied: false` |
+| One round trip | Attach `expect` (result condition) and `observeAfter` (tree and new windows after the action) to an action and get them in the same response |
+| Wrong targets refused | Stale references after a window or element changes are refused; several matches are refused with a candidate list |
+| No duplicate execution | Mutations are recorded by request ID; sending the same ID again never runs them twice |
+| Cleanup | Applications started by the session (and their children) are stopped, windows opened with `open` are closed, and keys and buttons the tool pressed are released |
+| Replay without a model | Selectors from `generate-selector` can be saved in C# Client code and rerun without any LLM call |
+| Tool integration | `Controller.exe --mcp` is an MCP server that Claude Code and other clients call directly |
+
+**How it differs from computer use**
+
+| | computer use | DesktopTestDriver |
 |---|---|---|
-| Find buttons and fields repeatedly | Interpret the screen or search the entire UI at each step | Validate and reuse element references; search only the relevant region |
-| Wait for the app to finish | Long fixed waits waste time; short waits may run the next step too early | Check the expected value or window and continue when the condition is met |
-| Act after the UI changes | Check whether saved coordinates or identifiers still point to the right target | Validate process, window, and element identity; reject stale references and ambiguous targets |
-| Recover from a lost response | Track whether the action ran and whether retrying is appropriate | Query the original result by request ID; a retained request with the same ID and content is not executed again |
-| Test another PC | Connect remote execution, screen retrieval, and result delivery yourself | Set up Controller and Agent, select a machineId, and retrieve UI data and screenshots |
-| Prepare for the next test | Write cleanup for leftover apps, child processes, and held input | Stop session-owned apps and children, release tool-owned input, and report cleanup results |
+| Finding targets | The model estimates coordinates from a screenshot | Look up by element ID or name |
+| Reading values | The model reads text from the screen | Receive the string itself |
+| Waiting | Repeated screenshots and judgement | Returns when the condition holds |
+| Repeating | The model looks at the screen every time | Saved selectors run without a model |
 
-For example, a script that always waits five seconds after clicking Save consumes that time even when saving finishes earlier. A condition wait can continue as soon as it observes the completion indicator. The test must still reopen the file and check its contents. **Reducing waiting does not mean skipping verification.**
+This compares how the two work; it is not a measurement. Time and token comparisons for the same scenario have not been measured yet.
 
-The tool is especially useful for repeated runs, frequent UI changes or lost responses, and tests across multiple Windows PCs. If your automation already has equivalent protection and recovery, evaluate the benefit against that setup. Actual time savings depend on the app and environment. The caller defines the test sequence and final success criteria: `completed` means the tool request finished, so verify product outcomes through UI, files, or server results separately.
+**Where it does not fit:** screens drawn directly with graphics (game clients, canvas UIs) have no UIA tree. Visual defects such as broken layout or colors are invisible to UIA, so a person or model must look at a capture. Only Windows is supported.
 
-API 2 uses UI Automation (UIA) for semantic GUI actions. Tests of actual keyboard and mouse input use an explicit input policy. UIA success does not validate the real keyboard/mouse path. Unsupported UIA actions never silently fall back to global input.
+![Before and after DesktopTestDriver, condition waits, and shared test features](docs/assets/e2e-benefits-infographic-en.png)
 
-## Recommended test workflow
+## Components
 
-1. **Define success.** Specify the expected UI, saved content, or server result and an overall test deadline.
-2. **Check the environment and target.** Use `--status` and `--doctor` to inspect the Agent, user session, and supported operations. Specify the target process scope.
-3. **Find the necessary elements.** Reuse the `elementId` and `snapshotToken` returned by API 2 `find-element`. Search for new items within the relevant panel.
-4. **Act and wait for a condition.** Follow `set-value` or `invoke` with `wait-condition` or `wait-window`. Each request is limited to five seconds; longer readiness waits use new read requests within the caller's overall deadline.
-5. **Verify product results.** Read UI values and, where needed, screenshots, files, and logs. Successful request delivery alone is not a passing test.
-6. **Keep evidence and clean up.** Preserve failures and uncertain outcomes. Clean up files, apps, sessions, Agents, and Controllers started for this test. Preserve pre-existing processes.
-
-Use screenshots when visual inspection is necessary and UIA for repeated value checks. Use existing product tools for file, server, and external API validation. DesktopTestDriver Core does not contain product-specific business APIs or a complete scenario runner.
-
-## Local and remote use
-
-| Program | Location | Role |
+| Program | Where | Role |
 |---|---|---|
-| `Controller.exe` | The coding agent's or test runner's PC | Route requests to the target Agent and collect results and images |
-| `Agent.exe` | The Windows PC running the target app | Observe and operate the GUI in the logged-in user's desktop |
+| `Controller.exe` | The PC running the coding agent or test runner | Accepts requests, forwards them to an agent and collects results and images. Offers CLI, json-lines and MCP entry points |
+| `Agent.exe` | The Windows PC with the application under test | Observes and operates the GUI in the logged-on user's desktop |
 
-For local use, run both programs on the same PC and connect through `127.0.0.1`. For remote use, run an Agent on each target PC and select it by `machineId`. Certificate registration and target/session checks apply to both configurations.
+Both can run on the same PC. Remotely, run one agent per test PC and select it with `machineId`. The connection is plain TCP with no certificate, token or registration. The agent connects to the controller.
 
 ![Example architecture connecting to a separate Windows test PC](docs/assets/architecture-en.svg)
 
-This diagram illustrates remote use. A separate PC is optional.
-
-| Environment | Requirements |
-|---|---|
-| PC shared with other work | Use the default `shared` policy. Background UIA mutations require an application profile and per-action non-interference qualification |
-| Real keyboard/mouse tests | Use `foreground-exclusive` with a valid input lease. Run without competing user input |
-| Dedicated test environment | Use Agent `machineUsage: dedicated` and `isolated-desktop`. The policy does not create a separate desktop or VM |
-| Console / RDP | Run in a standard user's active console or connected active RDP session. Locked, disconnected, secure-desktop, and elevated execution are unsupported |
-
 ## Quick start
 
-### 1. Build and deploy
+### 1. Build
 
-On a Windows 10/11 x64 PC with the .NET 10 SDK:
+On Windows 10/11 x64 with the .NET 10 SDK:
 
 ```powershell
 .\build.ps1 -Package
 ```
 
-Output is created under `bin/live_Release`. Runtime PCs need the .NET 10 Desktop Runtime x64. The package includes `Controller/`, `Agent/`, `Client/`, and `test-apps/`; role folders include documentation, schemas, and standalone examples.
+Output goes to `bin/live_Release`. Target PCs need the .NET 10 Desktop Runtime x64.
 
-### 2. Connect and inspect
+### 2. Run
 
-Follow [initial setup and persistent processes (Korean)](docs/agent-usage.md#최초-설정과-상주-실행) to create separate state directories, exchange/register public certificates, and start Controller and Agent. For remote use, also configure the Controller's listening address and TCP port access.
+No configuration file is needed; command-line options are enough. The default port is 25001.
+
+```powershell
+# Same PC
+.\Controller\Controller.exe --serve
+.\Agent\Agent.exe                     # run it in the logged-on desktop
+
+# Remote: the coding agent's PC
+.\Controller.exe --serve --listen 0.0.0.0:25001
+# Remote: the PC under test
+.\Agent.exe --controller 192.168.0.10:25001 --machine test-pc
+```
+
+| Default | Value |
+|---|---|
+| Controller listen address | `127.0.0.1:25001` (change with `--listen` only to accept remote agents) |
+| State folders | `%LOCALAPPDATA%\DesktopTestDriver\Controller`, `...\Agent` (change with `--state`) |
+| Agent machineId | The computer name (change with `--machine`) |
+
+For a resident setup use `scripts\manage.ps1 -Action Start|Stop|Status|Restart|InstallLogonTask`. To drive elevated tools (regedit, Services) run the agent elevated (`InstallLogonTask -Highest`).
 
 ```powershell
 .\Controller.exe --status
-.\Controller.exe --doctor --machine test-pc
+.\Controller.exe --doctor          # actually checks the UIA worker, capture, input monitor, storage, elevation and monitors
 ```
 
-Replace `test-pc` with a registered `machineId`. To inspect an existing app, prepare a target-scope JSON array containing its PID, creation time, executable path, and SHA-256, then run the bundled example:
+### 3. Open a session and test
 
 ```powershell
-.\examples\standalone\Inspect.ps1 -Controller .\Controller.exe -Machine test-pc -TargetScope C:\GuiTest\scope.json
+.\Controller.exe --session-open --launch C:\Tools\MyApp.exe
 ```
 
-The example opens an API 2 observation session, reads the target UI, and closes the session. See the [usage reference (Korean)](docs/agent-usage.md) for interaction policies and request examples, and the [GUI test guide (Korean)](docs/gui-test-guide.md) for a memo save-and-reopen walkthrough.
+This opens a session, starts the application, waits for its first window and returns its `windowId`. Attach to running applications with `--target-pid`, `--target-exe` or `--target-window-title`; open Settings or Control Panel inside the session with the `open` operation (`ms-settings:about`, `control.exe`). Add `--input` when real keyboard and mouse input is needed.
 
-### 3. Give your coding agent a test
+```text
+- Window "간단 메모" [e1 t=167cdf32baf7]
+  - Button #OpenButton "열기" [e3 t=fffaf470023a] patterns=Invoke
+  - Button #SaveButton "저장" [e4 t=1d93122bc0be] patterns=Invoke
+  - Edit #MemoText [e5 t=b2d40c2611bd] value="" patterns=Value,Scroll
+```
 
-> The Controller is `C:\DesktopTestDriver\Controller\Controller.exe`; the target machineId is `test-pc`. Read the usage reference and test entering text, saving, closing, and reopening `C:\GuiTest\SimpleMemo.exe`. Pass only if the reopened content matches. Set an overall deadline and use supported UIA operations and condition waits. Explicitly select the policy for steps requiring real input. On failure, retain request IDs and observation evidence; do not repeat an action whose execution is uncertain. Clean up files, processes, and sessions created for this test. Report verified results separately from unverified items.
+See the [command and request reference](docs/agent-usage.md) for the request format, operations and error handling, and the [GUI test guide](docs/gui-test-guide.md) for a save-and-reopen test procedure.
 
-## Validation scope and performance
+### 4. Connect a coding agent
+
+Add it to Claude Code as an MCP server. When no controller is running, the MCP server starts one itself.
 
 ```powershell
-# Build from source.
-.\build.ps1 -Configuration Debug
-# Build Release packages and run local contract and transport checks.
-.\verify.ps1
+claude mcp add desktop-test-driver -- C:\DesktopTestDriver\Controller\Controller.exe --mcp
 ```
 
-Local checks do not establish that real keyboard/mouse input or a product E2E scenario across two physical PCs passes. UIA tests and real-input tests are separate. UIA does not support every app or control. Capture may reject occluded or minimized windows, and HDR color accuracy is not guaranteed.
+There are six tools: `gui_session`, `gui_window`, `gui_observe`, `gui_act`, `gui_wait`, `gui_capture`. A companion skill file is in [skills/desktop-test-driver/SKILL.md](skills/desktop-test-driver/SKILL.md). For an agent that only uses the CLI:
 
-Working-tree validation on 2026-11-06 passed 60 local tests and two real Windows UIA tests using FormsWorkbench and SimpleMemo. The UIA tests observed zero global input events and zero target foreground transitions. In one synthetic 4,001-node parent-selector measurement, the sequential reference took 100.54ms and indexed lookup took 0.40ms. This is a single measurement of a specific search operation, not an overall E2E speed guarantee. That validation did not include two physical PCs, real input, or concurrent human use.
+> The controller is `C:\DesktopTestDriver\Controller\Controller.exe`. Read the reference, then test typing, saving, closing and reopening in `C:\GuiTest\SimpleMemo.exe`. It passes only if the reopened text matches. Use UIA actions and condition waits; on failure keep the request ID and the observed evidence. Do not repeat an action whose result was `completionUnknown`. Close the session you opened and report confirmed and unconfirmed items separately.
 
-Local evidence is stored in `artifacts/e2e-audit-local.txt`, `artifacts/e2e-audit-ui.txt`, and `artifacts/ui-tests/e934cab8f20448279a286cb47e4a909b/`. These generated artifacts are not included in a fresh clone. In your environment, measure setup, actions, condition waits, evidence collection, cleanup, failures, and retries separately.
+## Verification
+
+```powershell
+.\build.ps1 -Configuration Debug   # source build
+.\verify.ps1                       # Release build, package, contract/handler/TCP tests, package lifecycle check
+.\verify.ps1 -UiTests              # the above plus real-desktop UIA tests (fixtures, Settings, Control Panel)
+```
+
+There are three test groups. Contract and handler tests use a fake desktop to check result classification and session state; TCP tests run a controller and an agent in one process to check timeouts, oversized responses, reconnects and capture delivery; UI tests drive WinForms and WPF fixtures, Settings and Control Panel for real. Real keyboard and mouse input and a two-PC setup are not part of automated verification. UIA does not support every application or control, and captures of minimized windows are refused.
+
+`Driver.Tests.exe --bench FILE` times the driver's own work (find, set value, typing, capture, CLI and pipe round trips) against a fake provider.
 
 <details>
 <summary>Repository layout</summary>
 
 | Path | Contents |
 |---|---|
-| `src/Controller/`, `src/Agent/` | Request routing and Windows GUI executables |
+| `src/Controller/`, `src/Agent/` | Executables (the controller includes the CLI, json-lines and MCP entry points) |
 | `src/Client/` | C# client API |
-| `src/Core/`, `src/Contracts/` | Transport, UIA, input, cleanup, and request/response contracts |
-| `fixtures/`, `tests/` | Test apps and automated checks |
-| `schemas/`, `examples/standalone/` | DTO schemas and standalone examples |
-| `scripts/`, `docs/` | Operational scripts and documentation |
-| `bin/`, `artifacts/` | Generated distribution output and validation evidence |
+| `src/Core/`, `src/Contracts/` | Transport, UIA, input and cleanup, plus request/response contracts |
+| `fixtures/`, `tests/` | Test applications (SimpleMemo, FormsWorkbench, WpfWorkbench, InputWindow) and automated checks |
+| `schemas/`, `examples/standalone/` | DTO schemas (generated with `--export-schemas`) and a standalone example |
+| `scripts/`, `docs/`, `skills/` | Start/stop script, documentation, Claude Code skill |
 
 </details>
 

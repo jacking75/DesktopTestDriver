@@ -1,71 +1,46 @@
-using System.Collections.Concurrent;
-
 namespace DesktopTestDriver;
 
+/// <summary>Everything the request handler needs from the desktop. WindowsDesktop is the real one; tests use a fake.</summary>
 public interface IGuiDesktop
 {
+    /// <summary>Visible top-level windows of the interactive session, including untitled popups.</summary>
     DesktopWindow[] Windows();
-    DesktopWindow[] ScopedWindows(DesktopProcess[] scope) => Windows().Where(w => scope.Contains(w.Process)).ToArray();
     DesktopWindow Identify(long handle);
-    DesktopElement[] Controls(DesktopWindow window, CancellationToken cancellation);
-    byte[] Capture(DesktopWindow window, CancellationToken cancellation);
-    bool Focus(DesktopWindow window);
-    bool PointerMatches(DesktopWindow window) => true;
     bool Valid { get; }
+    bool PointerMatches(DesktopWindow window) => true;
     void Close(DesktopWindow window);
+    void SetState(DesktopWindow window, string state);
+    bool Focus(DesktopWindow window);
+    byte[] Capture(DesktopWindow window, PixelRect? region, double scale, CancellationToken cancellation);
+    UiaResult Automation(string session, UiaCommand command, CancellationToken cancellation);
+    void StartAutomation(string session) { }
+    void ReleaseAutomation(string session) { }
+    string? ClipboardText() => null;
+    void SetClipboardText(string text) => throw new GuiException("BackendNotSupported");
 }
-public sealed class WindowRegistry(IGuiDesktop desktop)
+public static class WindowQuery
 {
-    private readonly ConcurrentDictionary<string, DesktopWindow> windows = new();
-    private readonly ConcurrentDictionary<string, (string Window, DesktopElement Element)> elements = new();
-    public PublicWindow[] List(DesktopProcess[]? scope = null)
-    {
-        var selected = (scope == null ? desktop.Windows() : desktop.ScopedWindows(scope)).ToArray();
-        var ids = selected.ToDictionary(w => w.Handle, _ => "win-" + Guid.NewGuid().ToString("N"));
-        return selected.Select(w =>
-        {
-            var id = ids[w.Handle]; windows[id] = w;
-            return new PublicWindow(id, w.Title, w.Process.Pid, w.Process.CreatedAt, w.Process.ImagePath, w.Bounds, w.Foreground) { ClassName = w.ClassName, OwnerWindowId = ids.GetValueOrDefault(w.OwnerHandle) };
-        }).ToArray();
-    }
     public static bool Same(DesktopWindow a, DesktopWindow b) => a.Handle == b.Handle && a.Process == b.Process && a.Generation == b.Generation;
-    public void Retire(string id)
+    public static string Kind(string title, string className, long owner) =>
+        title.Length == 0 || className is "#32768" or "ComboLBox" or "Xaml_WindowedPopupClass" ? "popup" : owner != 0 ? "owned" : "main";
+    /// <summary>Matches a window against title/class/kind/process filters given in request arguments.</summary>
+    public static bool Matches(PublicWindow w, System.Text.Json.JsonElement a)
     {
-        windows.TryRemove(id,out _);
-        foreach(var element in elements.Where(e=>e.Value.Window==id).ToArray())elements.TryRemove(element.Key,out _);
+        string? F(string name) => GuiProtocol.OptionalText(a, name);
+        if (F("title") is { } title && w.Title != title) return false;
+        if (F("titleContains") is { } contains && !w.Title.Contains(contains, StringComparison.Ordinal)) return false;
+        if (F("titleRegex") is { } regex && !GuiProtocol.SafeRegex(regex).IsMatch(w.Title)) return false;
+        if (F("className") is { } className && w.ClassName != className) return false;
+        if (F("kind") is { } kind && w.Kind != kind) return false;
+        if (F("processName") is { } process && !string.Equals(w.ProcessName, process, StringComparison.OrdinalIgnoreCase)) return false;
+        if (F("ownerWindowId") is { } owner && w.OwnerWindowId != owner) return false;
+        return true;
     }
-    public DesktopWindow Resolve(string id)
+    public static PublicWindow? Find(IEnumerable<PublicWindow> windows, System.Text.Json.JsonElement a, bool allowAbsent)
     {
-        if (!windows.TryGetValue(id, out var before)) throw new GuiException("WindowNotFound");
-        DesktopWindow current;
-        try { current = desktop.Identify(before.Handle); } catch (GuiException) { throw; } catch { throw new GuiException("WindowNotFound"); }
-        if (!Same(before, current)) throw new GuiException("WindowChanged");
-        return current;
-    }
-    public PublicElement[] Controls(string id, CancellationToken cancellation)
-    {
-        var w = Resolve(id); var controls = desktop.Controls(w, cancellation);
-        if (!Same(w, Resolve(id))) throw new GuiException("WindowChanged");
-        return controls.Select(e =>
-        {
-            var elementId = "element-" + Guid.NewGuid().ToString("N"); elements[elementId] = (id, e);
-            return new PublicElement(elementId, e.AutomationId, e.Name, e.ControlType, e.Bounds, e.Enabled, e.Value);
-        }).ToArray();
-    }
-    public DesktopElement Element(string windowId, string? elementId, string? automationId, CancellationToken cancellation)
-    {
-        var w = Resolve(windowId); var current = desktop.Controls(w, cancellation);
-        DesktopElement[] matches;
-        if (elementId != null)
-        {
-            if (!elements.TryGetValue(elementId, out var saved) || saved.Window != windowId) throw new GuiException("ElementNotFound");
-            matches = current.Where(e => e.RuntimeId == saved.Element.RuntimeId).ToArray();
-            if (matches.Length == 1 && (matches[0].Bounds != saved.Element.Bounds || matches[0].AutomationId != saved.Element.AutomationId || matches[0].Name != saved.Element.Name || matches[0].ControlType != saved.Element.ControlType)) throw new GuiException("StaleElement");
-        }
-        else matches = current.Where(e => e.AutomationId == automationId).ToArray();
-        if (matches.Length == 0) throw new GuiException("ElementNotFound");
-        if (matches.Length != 1) throw new GuiException("AmbiguousTarget");
-        if (!matches[0].Enabled) throw new GuiException("ElementDisabled");
-        return matches[0];
+        var matches = windows.Where(w => Matches(w, a)).Take(6).ToArray();
+        if (matches.Length > 1) throw new GuiException("AmbiguousTarget", "MultipleWindowsMatch", new { matchCount = matches.Length, candidates = matches.Take(5).Select(m => new { m.WindowId, m.Title, m.ClassName, m.Kind }) }) { NoEffect = true };
+        if (matches.Length == 0 && !allowAbsent) throw new GuiException("WindowNotFound") { NoEffect = true };
+        return matches.SingleOrDefault();
     }
 }

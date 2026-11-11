@@ -1,152 +1,122 @@
 # 간단한 GUI 프로그램을 테스트하는 사용 매뉴얼
 
-이 문서는 메모 입력·저장·재열기로 E2E 결과를 확인하는 매뉴얼이다. 기본 예시는 실제 키·마우스와 파일 대화상자를 사용하는 API 1 경로다. 지원되는 앱은 API 2 UIA와 조건 대기로 반복 관측 비용과 불필요한 대기를 줄인다. 명령과 최초 설정은 [코딩 에이전트용 사용 규약](agent-usage.md)을 기준으로 한다. 아래 절차는 사용 예시이며 실제 시험 결과를 뜻하지 않는다.
+> **신뢰된 네트워크와 PC에서만 사용한다. 연결은 암호화하지 않는다.**
+
+이 문서는 메모 프로그램(`fixtures/SimpleMemo`)에 글을 쓰고, 저장하고, 닫았다가 다시 열어 내용을 확인하는 시험을 예로 든다. 명령과 요청 형식의 전체 규칙은 [사용 규약](agent-usage.md)에 있다.
 
 ## 먼저 시험 방식과 성공 기준을 정한다
 
-성공 조건은 저장 파일과 재실행한 앱의 내용이 일치하는 것이다. 전체 시험 마감 시간을 정하고 준비·조작·대기·정리 시간을 구분한다. 시간 초과나 읽기 실패는 통과로 처리하지 않는다.
-
-| 시험할 내용 | 사용할 경로 |
+| 정할 것 | 예 |
 |---|---|
-| 값 설정·버튼 기능·표시 결과 | 지원 패턴과 정책을 확인한 API 2 UIA를 사용한다. 요소 참조를 재사용하고 wait-condition으로 결과를 확인한다 |
-| 실제 타이핑·마우스·포커스·파일 대화상자 | 아래 API 1 절차와 명시적 입력 정책을 사용한다. 다른 작업과 입력이 경합하지 않는 환경에서 실행한다 |
+| 성공 기준 | 다시 연 메모의 내용이 입력한 글과 같다. 요청이 `completed`인 것만으로는 통과가 아니다 |
+| 조작 방식 | 기본은 UIA 조작(`set-value`, `invoke`)이다. 키보드 입력 경로 자체를 시험할 때만 `--input` 세션과 `type-text`를 쓴다 |
+| 전체 마감 | 예: 2분. 요청 하나는 최대 5초, 대기는 최대 30초다 |
+| 남길 근거 | 실패한 요청의 `requestId`, 응답, 필요하면 캡처 |
 
-공유 화면의 백그라운드 UIA 변경은 앱 프로필과 동작별 비간섭 인증이 필요하다. UIA 미지원 작업은 자동으로 키·마우스로 바꾸지 않는다. 자세한 정책과 예시는 [API 2 주요 작업](agent-usage.md#api-2-주요-작업)을 따른다.
+## 1. 실행한다
 
-## 1. 사용자가 요청한다
-
-사용자는 코딩 에이전트에게 다음과 같이 요청한다.
-
-> 테스트 PC의 ‘간단 메모’를 실행해서 ‘테스트 메모입니다’를 입력하고 저장하라. 프로그램을 닫았다가 다시 열어 내용이 유지되는지 확인하라. 끝나면 이번에 만든 파일과 프로그램을 정리하고 결과를 알려 달라.
-
-별도 테스트 산출물의 `test-apps/SimpleMemo/SimpleMemo.exe`를 사용한다. 메모 입력칸, ‘저장’ 버튼, ‘열기’ 버튼과 표준 파일 대화상자가 있다. 저장할 파일은 테스트 전용 폴더의 새 파일로 정한다.
-
-## 2. 어느 PC에서 무엇을 실행하는지 정한다
-
-| 위치 | 실행하는 것 | 하는 일 |
-|---|---|---|
-| 작업 PC | 코딩 에이전트와 Controller.exe | 코딩 에이전트가 다음 행동을 정하고 Controller에 요청한다 |
-| 테스트 PC | Agent.exe와 간단 메모 | Agent가 화면을 읽고 실제 마우스·키보드를 조작한다 |
-
-작업 PC와 테스트 PC는 같은 PC일 수도 있다. 같은 PC에서는 두 프로그램을 함께 실행한다. Agent는 활성 콘솔 또는 연결된 활성 RDP 세션에서 실행하며 잠금·연결 끊김 상태에서는 진행하지 않는다.
-
-여기서 **코딩 에이전트**는 요청을 이해하고 판단하는 주체다. **Agent.exe**는 테스트 PC에서 GUI 조작을 수행하는 프로그램이다.
-
-첫 사용 때는 Controller를 작업 PC에, Agent를 테스트 PC에 배치하고 서로 연결하도록 설정한다. Agent는 테스트 사용자가 로그인한 바탕화면에서 실행한다. 이 준비가 끝나면 테스트할 때마다 다시 설치하지 않는다.
-
-코딩 에이전트에는 다음 정보를 전달한다.
-
-| 필요한 정보 | 이 예시의 값 |
-|---|---|
-| 작업 PC의 Controller 위치 | `C:\DesktopTestDriver\Controller\Controller.exe` |
-| 테스트 PC 구분 이름 | `test-pc` |
-| 테스트 PC의 메모 실행 파일 | `C:\GuiTest\SimpleMemo.exe` |
-| 테스트 PC의 저장 파일 | `C:\GuiTest\Results\memo-01.txt` |
-| 작업 PC의 결과 보관 폴더 | `C:\GuiTestResults\memo-01` |
-
-경로와 이름은 예시다. 실제 사용할 때는 설치된 위치와 연결된 PC 정보를 사용한다. 파일 준비·회수·삭제는 같은 PC이면 로컬 명령을, 원격 PC이면 기존 SSH 연결을 사용한다. SSH는 원격 PC에서 파일과 명령을 다루는 수단이다.
-
-## 3. 연결 상태를 확인한다
-
-코딩 에이전트가 작업 PC에서 다음 명령을 실행한다.
+같은 PC라면:
 
 ```powershell
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --help
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --status
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --status --machine test-pc
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --doctor --machine test-pc
+.\Controller\Controller.exe --serve
+.\Agent\Agent.exe
+.\Controller\Controller.exe --status
 ```
 
-응답에서 테스트 PC가 연결되어 있는지, 로그인된 바탕화면을 조작할 수 있는지, 화면 읽기·클릭·문자 입력을 지원하는지 확인한다. 연결되지 않았거나 필요한 기능이 없으면 시험을 시작하지 않고 빠진 준비를 보고한다.
+테스트 PC가 따로 있으면 Controller를 `--listen 0.0.0.0:25001`로, Agent를 `--controller 주소:25001 --machine test-pc`로 실행한다. 설정 파일·인증서·등록 절차는 없다. `--doctor`로 Agent가 실제로 UIA·캡처·입력 감시를 쓸 수 있는지 확인한다.
 
-같은 PC에서는 로컬 명령으로, 원격 PC에서는 기존 SSH 연결로 실행 파일과 테스트 폴더도 확인한다. `memo-01.txt`가 이미 있으면 다른 새 파일 이름을 정한다. 기존 파일을 덮어쓰지 않는다.
-
-## 4. 테스트 PC를 조작할 연결을 연다
+## 2. 세션을 열면서 프로그램을 띄운다
 
 ```powershell
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --session-open --machine test-pc --mode control --interaction-policy foreground-exclusive
+$open = .\Controller.exe --session-open --launch C:\GuiTest\SimpleMemo.exe | ConvertFrom-Json
+$session = $open.controlSessionId
+$window = $open.data.launch.window.windowId      # 예: w1
 ```
 
-이 명령으로 연 연결을 ‘제어 세션’이라고 부른다. 응답으로 받은 세션 번호를 이후 요청에 넣는다. 이 번호 덕분에 여러 명령이 같은 테스트 PC를 대상으로 이어진다. foreground-exclusive의 입력 lease는 30초이며 사용자 활동으로 취소될 수 있다. 차단되면 입력을 반복하지 않고 사용 규약에 따라 상태와 미확정 요청을 확인한다.
+`--launch`는 세션 열기, 실행, 첫 창 대기를 한 번에 한다. 이 프로그램은 세션을 닫을 때 함께 종료된다. 이미 떠 있는 프로그램이면 `--target-pid` 또는 `--target-window-title`로 연다.
 
-## 5. 프로그램을 실행하고 한 단계씩 확인한다
+## 3. 화면을 읽는다
 
-다음 표의 순서로 진행한다. 각 단계 안에서도 **창 조회·클릭·문자 입력을 하나씩 요청하고 결과를 확인한다.** 전체 순서를 한 번에 DesktopTestDriver에 맡기지 않는다.
+```powershell
+.\Controller.exe --inspect --session $session --window $window
+```
 
-| 순서 | 코딩 에이전트가 하는 일 | 확인할 결과 |
-|---|---|---|
-| 1 | Controller에 lifetime: session으로 테스트 PC의 간단 메모 실행을 요청한다 | 도구 소유 processId와 Windows pid·createdAt·imagePath를 각각 받는다 |
-| 2 | 창 목록을 읽고 launch 응답의 pid·createdAt·imagePath로 메모 창을 찾는다. processId는 창의 pid와 비교하지 않는다. 첫 실행의 창 생성은 최대 10초 동안 새 windows 요청으로 기다린다 | 다른 프로그램의 창과 혼동하지 않는다 |
-| 3 | 창의 입력칸과 버튼 정보를 읽는다. 메모가 다른 창에 가려져 있으면 focus를 별도로 요청한 뒤 화면을 캡처해 연다 | 빈 메모 입력칸과 저장 버튼을 확인한다 |
-| 4 | 메모 창을 활성화하고 입력칸을 클릭한 뒤 문장을 입력한다 | 입력칸과 화면에 ‘테스트 메모입니다’가 나타난다 |
-| 5 | 저장 버튼을 클릭한다 | 저장 위치를 묻는 창이 나타난다 |
-| 6 | 저장 대화상자의 실제 windowId를 조회하고 별도 focus 후 파일 경로를 입력·저장한다 | 저장 창이 닫히며, 로컬 명령 또는 SSH로 해당 파일과 내용을 확인한다 |
-| 7 | 메모 창 닫기를 요청하고 창 목록을 다시 읽는다 | 창이 사라지고 해당 pid·시작 시각의 프로세스도 종료됐는지 확인한다 |
-| 8 | 같은 lifetime: session으로 다시 실행하고 ‘열기’ 대화상자도 별도로 조회·활성화한 뒤 저장 파일을 선택한다 | 다시 연 입력칸에 같은 문장이 나타난다 |
-| 9 | 마지막 화면을 캡처하고 실제 이미지 파일을 연다 | 저장 전후 내용이 일치한다 |
+```text
+- Window "간단 메모" [e1 t=167cdf32baf7]
+  - Button #OpenButton "열기" [e3 t=fffaf470023a] patterns=Invoke
+  - Button #SaveButton "저장" [e4 t=1d93122bc0be] patterns=Invoke
+  - Edit #MemoText [e5 t=b2d40c2611bd] value="" patterns=Value,Scroll
+```
 
-저장 창이 예상대로 나오지 않으면 현재 창과 화면을 다시 읽는다. 좌표를 추측하여 다음 버튼을 누르지 않는다. 기대한 결과가 나오지 않으면 그 지점에서 시험을 멈추고 정리한다.
+`e5`와 `t=…`가 조작에 쓰는 참조와 토큰이다. 화면 전체 대신 일부만 필요하면 `maxDepth`, `rootElementId`, `interactiveOnly`를 쓴다. 반복 실행할 시험이라면 참조 대신 `#MemoText` 같은 `automationId` 선택자를 쓰고, ID가 없는 요소는 `generate-selector`로 선택자를 얻는다.
 
-### 실제로 보내는 요청의 모습
+## 4. 한 단계씩 조작하고 확인한다
 
-예를 들어 5번의 저장 버튼 클릭은 아래와 같은 요청 하나다. 세션·창·버튼 번호는 앞서 받은 실제 값으로 바꾼다.
+요청은 json-lines나 MCP로 보내면 프로세스를 매번 띄우지 않아 빠르다. 아래는 요청 본문이다.
+
+**글 입력과 확인을 한 번에:**
 
 ```json
-{
-  "apiVersion": 1,
-  "requestId": "memo-save-click-001",
-  "controlSessionId": "실제로-받은-세션번호",
-  "operation": "click",
-  "arguments": {
-    "windowId": "실제로-찾은-메모창번호",
-    "elementId": "실제로-찾은-저장버튼번호"
-  }
-}
+{"requestId":"memo-1","controlSessionId":"…","operation":"set-value","note":"메모 입력",
+ "arguments":{"windowId":"w1","elementId":"e5","snapshotToken":"b2d40c2611bd","value":"테스트 메모",
+   "expect":{"selector":{"automationId":"MemoText"},"condition":"value-equals","expected":"테스트 메모"}}}
 ```
 
-코딩 에이전트는 이 내용을 작업 PC의 `C:\GuiTestResults\memo-01\save-click.json`에 쓰고 다음 명령을 실행한다. 해당 폴더는 미리 만든다.
+응답의 `data.expect.satisfied`가 `true`면 값이 들어갔다.
 
-```powershell
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --request 'C:\GuiTestResults\memo-01\save-click.json'
+**저장 버튼:**
+
+```json
+{"requestId":"memo-save","controlSessionId":"…","operation":"invoke",
+ "arguments":{"windowId":"w1","elementId":"e4","snapshotToken":"1d93122bc0be","observeAfter":{"includeNewWindows":true,"maxDepth":2}}}
 ```
 
-다른 작업도 같은 방식으로 요청 하나씩 보낸다. 새 작업에는 새 요청 번호를 붙이고, 창 활성화와 입력은 각각 별도 요청으로 보낸다. 버튼 정보를 읽을 수 없으면 새로 캡처한 이미지를 열어 위치를 확인하고 그 이미지에 맞는 좌표로 클릭한다.
+`data.after.newWindows`에 저장 대화상자가 나온다. 대화상자도 같은 방식으로 `find-element`(`selector: {"controlType":"Edit"}` 등) → `set-value` → `invoke`로 다룬다. 대화상자가 뜨기를 따로 기다릴 때는 `wait-window`를 쓴다.
 
-메모의 실제 AutomationId는 입력칸 `MemoText`, 저장 버튼 `SaveButton`, 열기 버튼 `OpenButton`이다. 파일 대화상자의 요소는 실행 환경에서 다시 조회한다.
+**완료 표시를 기다린다:**
 
-응답의 `completed`는 **요청한 클릭 전달을 마쳤다는 뜻**이다. 메모 저장 성공은 코딩 에이전트가 저장 파일과 다시 연 화면을 보고 판단한다. 화면 캡처는 Controller가 작업 PC에 저장하므로 코딩 에이전트가 그 파일을 직접 열어 본다.
+```json
+{"requestId":"r-7","controlSessionId":"…","operation":"wait-condition","timeoutMilliseconds":10000,
+ "arguments":{"windowId":"w1","anyOf":[
+   {"selector":{"automationId":"TitleBar"},"condition":"name-contains","expected":"memo.txt"},
+   {"selector":{"controlType":"Window","name":"오류"},"condition":"exists"}]}}
+```
 
-## 6. 실패하거나 응답이 끊기면 처리한다
+`satisfied: true`와 `matchedIndex`로 어느 쪽이 먼저 나타났는지 안다. 시간 초과는 `satisfied: false`로 온다(오류가 아니다).
 
-| 상황 | 코딩 에이전트가 하는 일 |
+## 5. 닫고 다시 열어 확인한다
+
+창을 닫고(`close-window`), 같은 파일로 다시 실행한다(`launch`에 `arguments: ["C:\\GuiTest\\memo.txt"]`, `waitWindow`). 새 창에서 `find-element`로 `MemoText`를 찾아 `value.text`가 입력한 글과 같은지 본다. 같아야 통과다.
+
+## 6. 실패하거나 응답이 끊기면
+
+| 상황 | 행동 |
 |---|---|
-| 버튼이나 창이 사라진다 | 현재 창·버튼·화면을 다시 확인한다 |
-| 클릭 응답을 받지 못한다 | 같은 클릭을 바로 반복하지 않고, 원래 요청 번호로 실행 결과부터 조회한다 |
-| 저장 파일 내용이 다르다 | 실패로 기록하고 해당 화면과 파일 내용을 보관한다 |
-| 파일이나 화면을 읽을 수 없다 | 확인하지 못한 항목을 통과로 기록하지 않는다 |
+| `rejected` | 아무 일도 없었다. 오류 코드를 보고 고쳐 다시 보낸다 |
+| `StaleElement` | 화면이 바뀌었다. 다시 찾는다 |
+| `AmbiguousTarget` | `error.data.candidates`를 보고 선택자를 좁힌다 |
+| `completionUnknown` | 같은 조작을 다시 보내지 않는다. 화면을 읽어 실제 결과를 확인하고 `--session-reconcile 세션 --request-id ID --resolution effect-confirmed --resume`처럼 확정한다 |
+| 응답을 잃었다 | `--request-status 세션 요청ID`로 기록된 결과를 본다 |
 
-ControllerResponseUnavailable과 completionUnknown은 실행되지 않았다는 뜻이 아니다. 원래 요청 ID로 조회하고 실제 값·화면을 확인한다. 결과가 없거나 불확실하면 미확인 상태로 남기고 같은 조작을 새 ID로 반복하지 않는다.
+화면 모양까지 확인해야 하면 `capture`(`scale: 0.5`, `elementId`로 한 요소만)로 이미지를 남긴다.
 
-응답을 잃은 요청은 다음 형태로 조회한다.
+## 7. 정리하고 보고한다
 
 ```powershell
-& 'C:\DesktopTestDriver\Controller\Controller.exe' --request-status '실제로-받은-세션번호' 'memo-save-click-001'
+.\Controller.exe --trace-export $session C:\GuiTest\trace     # 조작 기록(trace.jsonl)
+.\Controller.exe --session-close $session
 ```
 
-## 7. 정리한 뒤 결과를 보고한다
+세션을 닫으면 세션이 띄운 프로그램이 종료되고 `open`으로 연 창이 닫히며 도구가 누른 키가 해제된다. 응답의 `terminatedProcessIds`, `closedWindowIds`, `retainedWindowIds`로 정리 결과를 확인한다. 시험에서 만든 파일은 직접 지운다. 보고에는 확인한 항목과 확인하지 못한 항목을 나눠 적는다.
 
-1. 성공·실패 판단에 필요한 마지막 화면과 결과를 작업 PC에 보관한다.
-2. 이번에 실행한 메모 프로그램을 닫고 실제 종료를 확인한다. 저장 확인 창이 뜨면 내용을 읽고 처리한다.
-3. Controller의 `--session-close`에 실제 세션 번호를 넣어 세션 소유 앱 종료와 도구 입력 해제를 확인한다. 정상 닫기가 실패한 경우 소유 Job 종료로 미저장 내용이 사라질 수 있으므로 필요한 근거를 먼저 보관한다.
-4. 프로세스 정리를 확인한 뒤 이번에 만든 테스트 파일만 삭제한다.
-5. 이번 시험에서 시작한 Controller와 Agent도 종료하고 프로세스·포트 정리를 확인한다. 시험 전부터 실행 중이던 프로그램은 유지한다.
+## Windows 자체 GUI를 시험할 때
 
-lifetime: session으로 시작한 앱은 세션 종료 시 소유 자식 프로세스까지 정리한다. 종료 응답의 applicationsStopped와 입력 해제 결과를 확인한다. lifetime을 생략한 keep 앱과 기존 앱은 세션 종료만으로 닫히지 않는다. 성공·실패·중단 모두 정리 절차를 수행한다.
+| 대상 | 여는 방법 | 참고 |
+|---|---|---|
+| 설정 앱 | `open` `{"target":"ms-settings:about","waitWindow":{"className":"ApplicationFrameWindow","timeoutMilliseconds":15000}}` | 창 틀은 `ApplicationFrameHost.exe`, 내용은 `SystemSettings.exe`가 그린다. 둘 다 범위에 든다. 목록은 가상화되어 있으므로 `automationId`로 찾거나 `completeness: "realized"`를 쓴다 |
+| 제어판 | `open` `{"target":"control.exe","waitWindow":{"className":"CabinetWClass"}}` | `explorer.exe`가 창을 가진다. 세션을 닫으면 창만 닫고 explorer는 종료하지 않는다 |
+| 관리 콘솔(.msc) | `open` `{"target":"services.msc","verb":"runas"}` | Agent를 관리자로 실행해야 한다. 아니면 `ElevationRequired` |
+| 메뉴·드롭다운 | `set-expanded` 뒤 `windows`에 `kind: "popup"` | 팝업은 제목 없는 별도 창이다 |
+| Win32 목록·트리 | `read-grid`, `select-item`, `set-expanded` | `Value`가 없으면 `LegacyIAccessible` 값으로 읽는다(`value.source: "legacy"`). 동작하지 않으면 `legacy-default-action` |
 
-보고는 다음처럼 작성한다. 아래 내용은 **성공했을 경우의 가상 보고**다.
-
-> 간단 메모 테스트를 통과했다. 문장 입력, 파일 저장, 프로그램 종료 후 다시 열기를 확인했다. 다시 연 내용은 ‘테스트 메모입니다’와 일치했다. 결과 화면을 작업 PC에 보관했고 테스트 파일·메모 프로그램·제어 세션을 정리했다.
-
-이 사용 방식에서 시험 순서와 성공 여부를 판단하는 주체는 코딩 에이전트다. DesktopTestDriver에는 창 조회·클릭·입력 같은 요청을 하나씩 보낸다.
-
-보고에는 제품 결과, 도구 응답, 실패 원인 분류(제품·서버, 테스트 방법·판정, 환경·외부 API, 원인 미확정), 소요 시간, 근거 위치, 정리 결과와 미확인 항목을 포함한다. UIA 회귀 시험 통과만으로 이 문서의 저장·재열기 전체 시나리오가 통과했다고 보고하지 않는다.
+Windows 버전에 따라 화면 구성이 다르므로 이런 대상의 시험은 "지정한 요소를 찾고 값을 읽는다"처럼 좁게 판정한다.

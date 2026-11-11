@@ -11,6 +11,13 @@
       ],
       "default": null
     },
+    "automationIdRegex": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
     "controlType": {
       "type": [
         "string",
@@ -19,6 +26,27 @@
       "default": null
     },
     "name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "nameContains": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "nameStartsWith": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "nameRegex": {
       "type": [
         "string",
         "null"
@@ -59,6 +87,13 @@
           ],
           "default": null
         },
+        "automationIdRegex": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "controlType": {
           "type": [
             "string",
@@ -67,6 +102,27 @@
           "default": null
         },
         "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "nameContains": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "nameStartsWith": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "nameRegex": {
           "type": [
             "string",
             "null"
@@ -97,9 +153,23 @@
         "parent": {
           "$ref": "#/properties/parent",
           "default": null
+        },
+        "index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,
+      "default": null
+    },
+    "index": {
+      "type": [
+        "integer",
+        "null"
+      ],
       "default": null
     }
   },

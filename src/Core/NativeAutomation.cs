@@ -2,130 +2,103 @@ using System.Runtime.InteropServices;
 
 namespace DesktopTestDriver;
 
-// Native UIA3 patterns share the same provider/runtime identity as the observation.
-// No focus or input API is called here.
+// Native UIA3 pattern calls. The element is located by its runtime id, so the provider that was observed
+// is the one that receives the call. No focus or input API is used here.
 internal static class NativeAutomation
 {
-    private static readonly Dictionary<string,IUIAutomationElement> boundElements=[];
-    private static string Key(long handle,int[] id)=>handle+"|"+string.Join("-",id);
-    internal static string? LastDispatchKind {get;private set;}
-    internal static void DisposeWorker(){foreach(var element in boundElements.Values)Marshal.ReleaseComObject(element);boundElements.Clear();}
-    private static void Remember(long handle,IUIAutomationElement element,int[] runtimeId)
+    private const int TreeScopeSubtree = 7, RuntimeIdProperty = 30000;
+    private static IUIAutomation? client;
+    private static readonly Dictionary<string, IUIAutomationElement> bound = [];
+    private static IUIAutomation Client() => client ??= (IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new("E22AD333-B25F-460C-83D0-0581107395C9"))!)!;
+    internal static string? LastDispatchKind { get; private set; }
+    internal static void DisposeWorker()
     {
-        var key=Key(handle,runtimeId);if(boundElements.Remove(key,out var prior))Marshal.ReleaseComObject(prior);
-        if(boundElements.Count>=1024){var first=boundElements.First();boundElements.Remove(first.Key);Marshal.ReleaseComObject(first.Value);}
-        boundElements[key]=element;
+        foreach (var element in bound.Values) Marshal.ReleaseComObject(element); bound.Clear();
+        if (client != null) { Marshal.ReleaseComObject(client); client = null; }
     }
-    internal static void Bind(long handle,string? scopeRuntimeId,ObservationNode node,int[] runtimeId)
+    private static string Key(long handle, int[] id) => handle + "|" + string.Join("-", id);
+    /// <summary>Finds the native element with this runtime id under the window. Null when the native and managed trees disagree.</summary>
+    internal static IUIAutomationElement? Find(long handle, int[] runtimeId)
     {
-        if(boundElements.ContainsKey(Key(handle,runtimeId)))return;
-        var property=node.AutomationId.Length>0?30011:node.ClassName.Length>0?30012:30005;var value=property==30011?node.AutomationId:property==30012?node.ClassName:node.Name;if(value.Length==0)return;
-        var client=(IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new("E22AD333-B25F-460C-83D0-0581107395C9"))!)!;IUIAutomationElement? ownedRoot=null;object? condition=null;IUIAutomationElementArray? found=null;
+        var key = Key(handle, runtimeId);
+        if (bound.TryGetValue(key, out var known))
+        {
+            try { if (known.GetRuntimeId().SequenceEqual(runtimeId)) { LastDispatchKind = "cached-element"; return known; } } catch (COMException) { }
+            bound.Remove(key); Marshal.ReleaseComObject(known);
+        }
+        var c = Client(); IUIAutomationElement? root = null; object? condition = null;
         try
         {
-            var root=scopeRuntimeId!=null&&boundElements.TryGetValue(handle+"|"+scopeRuntimeId,out var scope)?scope:ownedRoot=client.ElementFromHandle(new IntPtr(handle));
-            condition=client.CreatePropertyCondition(property,value);found=root.FindAll(7,condition);if(found.Length()>2048)throw new GuiException("SearchIncomplete");
-            for(int i=0;i<found.Length();i++){var element=found.GetElement(i);var keep=false;try{if(element.GetRuntimeId().SequenceEqual(runtimeId)){Remember(handle,element,runtimeId);keep=true;return;}}finally{if(!keep)Marshal.ReleaseComObject(element);}}
+            root = c.ElementFromHandle(new IntPtr(handle));
+            if (root.GetRuntimeId().SequenceEqual(runtimeId)) { var keep = root; root = null; Remember(key, keep); LastDispatchKind = "native-window"; return keep; }
+            condition = c.CreatePropertyCondition(RuntimeIdProperty, runtimeId);
+            var cache = c.CreateCacheRequest();
+            try
+            {
+                cache.put_TreeFilter(c.RawViewCondition());
+                var found = root.FindFirstBuildCache(TreeScopeSubtree, condition, cache);
+                if (found == null) return null;
+                Remember(key, found); LastDispatchKind = "runtime-id-search"; return found;
+            }
+            finally { Marshal.ReleaseComObject(cache); }
         }
-        finally{if(found!=null)Marshal.ReleaseComObject(found);if(condition!=null)Marshal.ReleaseComObject(condition);if(ownedRoot!=null)Marshal.ReleaseComObject(ownedRoot);Marshal.ReleaseComObject(client);}
+        catch (COMException) { return null; }
+        finally { if (condition != null) Marshal.ReleaseComObject(condition); if (root != null) Marshal.ReleaseComObject(root); }
     }
-    internal sealed record NativeQueryMatch(long Handle,int[] RuntimeId);
-    internal static NativeQueryMatch[]? FindById(long handle,string automationId,string treeView,bool requireComplete=true)
+    private static void Remember(string key, IUIAutomationElement element)
     {
-        var client=(IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new("E22AD333-B25F-460C-83D0-0581107395C9"))!)!;
-        var owned=new List<object>();T Own<T>(T value)where T:class{owned.Add(value);return value;}
+        if (bound.Count >= 2048) { foreach (var old in bound.Take(512).ToArray()) { bound.Remove(old.Key); Marshal.ReleaseComObject(old.Value); } }
+        bound[key] = element;
+    }
+    private static T Pattern<T>(IUIAutomationElement element, int patternId) where T : class =>
+        element.GetCurrentPattern(patternId) as T ?? throw new GuiException("PatternNotSupported") { NoEffect = true };
+    /// <summary>Runs <paramref name="action"/> on the pattern. DispatchStarted is raised immediately before the provider call.</summary>
+    private static bool With<T>(long handle, int[] runtimeId, int patternId, Action<T> action) where T : class
+    {
+        var element = Find(handle, runtimeId); if (element == null) return false;
+        var pattern = Pattern<T>(element, patternId);
+        try { UiaAutomation.DispatchStarted = true; action(pattern); return true; }
+        finally { Marshal.ReleaseComObject(pattern); }
+    }
+    public static bool SetValue(long handle, int[] id, string value) => With<IUIAutomationValuePattern>(handle, id, 10002, p => p.SetValue(value));
+    public static bool Invoke(long handle, int[] id) => With<IUIAutomationInvokePattern>(handle, id, 10000, p => p.Invoke());
+    public static bool Select(long handle, int[] id) => With<IUIAutomationSelectionItemPattern>(handle, id, 10010, p => p.Select());
+    public static bool Expand(long handle, int[] id, bool expanded) => With<IUIAutomationExpandCollapsePattern>(handle, id, 10005, p => { if (expanded) p.Expand(); else p.Collapse(); });
+    public static bool Scroll(long handle, int[] id, double horizontal, double vertical) => With<IUIAutomationScrollPattern>(handle, id, 10004, p => p.SetScrollPercent(horizontal, vertical));
+    public static bool SetRange(long handle, int[] id, double value) => With<IUIAutomationRangeValuePattern>(handle, id, 10003, p => p.SetValue(value));
+    public static bool DefaultAction(long handle, int[] id) => With<IUIAutomationLegacyIAccessiblePattern>(handle, id, 10018, p => p.DoDefaultAction());
+    public static bool ScrollIntoView(long handle, int[] id) => With<IUIAutomationScrollItemPattern>(handle, id, 10017, p => p.ScrollIntoView());
+    public static bool Realize(long handle, int[] id) => With<IUIAutomationVirtualizedItemPattern>(handle, id, 10020, p => p.Realize());
+    public static bool SetFocus(long handle, int[] id)
+    {
+        var element = Find(handle, id); if (element == null) return false;
+        UiaAutomation.DispatchStarted = true; element.SetFocus(); return true;
+    }
+    /// <summary>Toggles until the desired state is reached. A three-state control needs up to three calls.</summary>
+    public static bool Toggle(long handle, int[] id, int desired) => With<IUIAutomationTogglePattern>(handle, id, 10015, toggle =>
+    {
+        for (int i = 0; i < 3 && toggle.get_CurrentToggleState() != desired; i++) toggle.Toggle();
+        if (toggle.get_CurrentToggleState() != desired) throw new GuiException("PostconditionFailed", "ToggleStateNotReached");
+    });
+    public static int? ToggleState(long handle, int[] id)
+    {
+        var element = Find(handle, id); if (element == null) return null;
+        var pattern = element.GetCurrentPattern(10015) as IUIAutomationTogglePattern; if (pattern == null) return null;
+        try { return pattern.get_CurrentToggleState(); } finally { Marshal.ReleaseComObject(pattern); }
+    }
+    /// <summary>LegacyIAccessible availability and value (Win32 common controls behind MSAA proxies).</summary>
+    public static (bool Available, string? Value) Legacy(long handle, int[] id)
+    {
+        var element = Find(handle, id); if (element == null) return (false, null);
         try
         {
-            var root=Own(client.ElementFromHandle(new IntPtr(handle)));
-            var id=Own(client.CreatePropertyCondition(30011,automationId));
-            var virtualItem=Own(client.CreatePropertyCondition(System.Windows.Automation.AutomationElement.IsVirtualizedItemPatternAvailableProperty.Id,true));
-            var container=Own(client.CreatePropertyCondition(System.Windows.Automation.AutomationElement.IsItemContainerPatternAvailableProperty.Id,true));
-            var virtualized=Own(client.CreateOrCondition(virtualItem,container));var query=requireComplete?Own(client.CreateOrCondition(id,virtualized)):id;
-            var view=Own(treeView switch{"raw"=>client.RawViewCondition(),"content"=>client.ContentViewCondition(),_=>client.ControlViewCondition()});
-            var condition=Own(client.CreateAndCondition(view,query));var elements=Own(root.FindAll(7,condition));if(elements.Length()>1024)throw new GuiException("SearchIncomplete");
-            var result=new List<NativeQueryMatch>();bool missingHandle=false;
-            for(int i=0;i<elements.Length();i++)
-            {
-                var element=elements.GetElement(i);
-                var keep=false;
-                try
-                {
-                    if(requireComplete&&(element.GetCurrentPropertyValue(System.Windows.Automation.AutomationElement.IsVirtualizedItemPatternAvailableProperty.Id) is true || element.GetCurrentPropertyValue(System.Windows.Automation.AutomationElement.IsItemContainerPatternAvailableProperty.Id) is true))throw new GuiException("SearchIncomplete");
-                    if(element.GetCurrentPropertyValue(30011) as string!=automationId)continue;
-                    var runtimeId=element.GetRuntimeId();var native=Convert.ToInt64(element.GetCurrentPropertyValue(30020));if(native==0)missingHandle=true;result.Add(new(native,runtimeId));Remember(handle,element,runtimeId);keep=true;
-                }
-                finally{if(!keep)Marshal.ReleaseComObject(element);}
-            }
-            return missingHandle?null:result.ToArray();
+            if (element.GetCurrentPropertyValue(30090) is not true) return (false, null);
+            return (true, element.GetCurrentPropertyValue(30093) as string);
         }
-        finally{for(int i=owned.Count-1;i>=0;i--)Marshal.ReleaseComObject(owned[i]);Marshal.ReleaseComObject(client);}
-    }
-    public static void SetValue(long handle, int[] runtimeId, string value)
-        => WithPattern(handle,runtimeId,10002,pattern=>((IUIAutomationValuePattern)pattern).SetValue(value));
-    public static void Invoke(long handle,int[] runtimeId)
-        => WithPattern(handle,runtimeId,10000,pattern=>((IUIAutomationInvokePattern)pattern).Invoke());
-    public static void Select(long handle,int[] runtimeId)
-        => WithPattern(handle,runtimeId,10010,pattern=>((IUIAutomationSelectionItemPattern)pattern).Select());
-    public static void Expand(long handle,int[] runtimeId,bool expanded)
-        => WithPattern(handle,runtimeId,10005,pattern=>{if(expanded)((IUIAutomationExpandCollapsePattern)pattern).Expand();else ((IUIAutomationExpandCollapsePattern)pattern).Collapse();});
-    public static void Toggle(long handle,int[] runtimeId,bool enabled)
-        => WithPattern(handle,runtimeId,10015,pattern=>
-        {
-            var toggle=(IUIAutomationTogglePattern)pattern;var state=toggle.Current();
-            if(state==2)throw new GuiException("TriStateNotSupported");
-            if(state!=(enabled?1:0))toggle.Toggle();
-            if(toggle.Current()!=(enabled?1:0))throw new GuiException("PostconditionFailed");
-        });
-    public static void Scroll(long handle,int[] runtimeId,double horizontal,double vertical)
-        => WithPattern(handle,runtimeId,10004,pattern=>((IUIAutomationScrollPattern)pattern).SetScrollPercent(horizontal,vertical));
-    private static void WithPattern(long handle,int[] runtimeId,int patternId,Action<object> action)
-    {
-        LastDispatchKind=null;
-        if(boundElements.TryGetValue(Key(handle,runtimeId),out var known))
-        {
-            if(!known.GetRuntimeId().SequenceEqual(runtimeId))throw new GuiException("StaleElement");
-            var pattern=known.GetCurrentPattern(patternId);try{LastDispatchKind="cached-element";action(pattern);return;}finally{Marshal.ReleaseComObject(pattern);}
-        }
-        var client = (IUIAutomation)Activator.CreateInstance(Type.GetTypeFromCLSID(new("E22AD333-B25F-460C-83D0-0581107395C9"))!)!;
-        IUIAutomationElement? root = null; object? condition = null; IUIAutomationElementArray? elements = null;
-        try
-        {
-            root = client.ElementFromHandle(new IntPtr(handle));
-            if(root.GetRuntimeId().SequenceEqual(runtimeId))
-            {
-                var direct=root.GetCurrentPattern(patternId);
-                try{LastDispatchKind="native-window";action(direct);return;}finally{Marshal.ReleaseComObject(direct);}
-            }
-            foreach(var controlView in new[]{true,false})
-            {
-                condition=controlView?client.ControlViewCondition():client.RawViewCondition();elements=root.FindAll(7,condition);
-                if (elements.Length() > 2048) throw new GuiException("SearchIncomplete");
-                for (int i = 0; i < elements.Length(); i++)
-                {
-                    var element = elements.GetElement(i);
-                    try
-                    {
-                        if (!element.GetRuntimeId().SequenceEqual(runtimeId)) continue;
-                        var pattern = element.GetCurrentPattern(patternId);
-                        try {LastDispatchKind=controlView?"control-tree-scan":"raw-tree-scan";action(pattern); return; }
-                        finally { Marshal.ReleaseComObject(pattern); }
-                    }
-                    finally { Marshal.ReleaseComObject(element); }
-                }
-                Marshal.ReleaseComObject(elements);elements=null;Marshal.ReleaseComObject(condition);condition=null;
-            }
-            throw new GuiException("StaleElement");
-        }
-        finally
-        {
-            if (elements != null) Marshal.ReleaseComObject(elements);
-            if (condition != null) Marshal.ReleaseComObject(condition);
-            if (root != null) Marshal.ReleaseComObject(root);
-            Marshal.ReleaseComObject(client);
-        }
+        catch (COMException) { return (false, null); }
     }
     [ComImport, Guid("30cbe57d-d9d0-452a-ab13-7ac5ac4825ee"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUIAutomation
+    internal interface IUIAutomation
     {
         void CompareElements(); void CompareRuntimeIds(); void GetRootElement();
         IUIAutomationElement ElementFromHandle(IntPtr handle);
@@ -135,44 +108,47 @@ internal static class NativeAutomation
         [return: MarshalAs(UnmanagedType.Interface)] object RawViewCondition();
         [return: MarshalAs(UnmanagedType.Interface)] object ControlViewCondition();
         [return: MarshalAs(UnmanagedType.Interface)] object ContentViewCondition();
-        void CreateCacheRequest();void CreateTrueCondition();void CreateFalseCondition();
-        [return: MarshalAs(UnmanagedType.Interface)] object CreatePropertyCondition(int propertyId,[MarshalAs(UnmanagedType.Struct)]object value);
-        void CreatePropertyConditionEx();
-        [return: MarshalAs(UnmanagedType.Interface)] object CreateAndCondition([MarshalAs(UnmanagedType.Interface)]object first,[MarshalAs(UnmanagedType.Interface)]object second);
-        void CreateAndConditionFromArray();void CreateAndConditionFromNativeArray();
-        [return: MarshalAs(UnmanagedType.Interface)] object CreateOrCondition([MarshalAs(UnmanagedType.Interface)]object first,[MarshalAs(UnmanagedType.Interface)]object second);
+        IUIAutomationCacheRequest CreateCacheRequest(); void CreateTrueCondition(); void CreateFalseCondition();
+        [return: MarshalAs(UnmanagedType.Interface)] object CreatePropertyCondition(int propertyId, [MarshalAs(UnmanagedType.Struct)] object value);
+    }
+    [ComImport, Guid("b32a92b5-bc25-4078-9c08-d7ee95c48e03"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IUIAutomationCacheRequest
+    {
+        void AddProperty(int propertyId); void AddPattern(int patternId); void Clone();
+        void get_TreeScope(); void put_TreeScope(int scope); void get_TreeFilter();
+        void put_TreeFilter([MarshalAs(UnmanagedType.Interface)] object filter);
     }
     [ComImport, Guid("d22108aa-8ac5-49a5-837b-37bbb3d7591e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUIAutomationElement
+    internal interface IUIAutomationElement
     {
         void SetFocus();
-        [return: MarshalAs(UnmanagedType.SafeArray, SafeArraySubType=VarEnum.VT_I4)] int[] GetRuntimeId();
-        void FindFirst();
-        IUIAutomationElementArray FindAll(int scope, [MarshalAs(UnmanagedType.Interface)] object condition);
-        void FindFirstBuildCache(); void FindAllBuildCache(); void BuildUpdatedCache();
-        [return: MarshalAs(UnmanagedType.Struct)]object GetCurrentPropertyValue(int propertyId);
+        [return: MarshalAs(UnmanagedType.SafeArray, SafeArraySubType = VarEnum.VT_I4)] int[] GetRuntimeId();
+        void FindFirst(); void FindAll();
+        IUIAutomationElement? FindFirstBuildCache(int scope, [MarshalAs(UnmanagedType.Interface)] object condition, IUIAutomationCacheRequest cache);
+        void FindAllBuildCache(); void BuildUpdatedCache();
+        [return: MarshalAs(UnmanagedType.Struct)] object GetCurrentPropertyValue(int propertyId);
         void GetCurrentPropertyValueEx(); void GetCachedPropertyValue(); void GetCachedPropertyValueEx();
         void GetCurrentPatternAs(); void GetCachedPatternAs();
         [return: MarshalAs(UnmanagedType.IUnknown)] object GetCurrentPattern(int patternId);
     }
-    [ComImport, Guid("14314595-b4bc-4055-95f2-58f2e42c9855"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUIAutomationElementArray
-    {
-        int Length(); IUIAutomationElement GetElement(int index);
-    }
     [ComImport, Guid("a94cd8b1-0844-4cd6-9d2d-640537ab39e9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUIAutomationValuePattern
-    {
-        void SetValue([MarshalAs(UnmanagedType.BStr)] string value);
-    }
+    private interface IUIAutomationValuePattern { void SetValue([MarshalAs(UnmanagedType.BStr)] string value); }
     [ComImport, Guid("fb377fbe-8ea6-46d5-9c73-6499642d3059"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IUIAutomationInvokePattern { void Invoke(); }
     [ComImport, Guid("a8efa66a-0fda-421a-9194-38021f3578ea"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IUIAutomationSelectionItemPattern { void Select(); }
     [ComImport, Guid("619be086-1f4e-4ee4-bafa-210128738730"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUIAutomationExpandCollapsePattern { void Expand();void Collapse(); }
+    private interface IUIAutomationExpandCollapsePattern { void Expand(); void Collapse(); }
     [ComImport, Guid("94cf8058-9b8d-4ab9-8bfd-4cd0a33c8c70"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUIAutomationTogglePattern { void Toggle();int Current(); }
+    private interface IUIAutomationTogglePattern { void Toggle(); int get_CurrentToggleState(); }
     [ComImport, Guid("88f4d42a-e881-459d-a77c-73bbbb7e02dc"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IUIAutomationScrollPattern { void Scroll();void SetScrollPercent(double horizontal,double vertical); }
+    private interface IUIAutomationScrollPattern { void Scroll(); void SetScrollPercent(double horizontal, double vertical); }
+    [ComImport, Guid("59213f4f-7346-49e5-b120-80555987a148"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IUIAutomationRangeValuePattern { void SetValue(double value); }
+    [ComImport, Guid("828055ad-355b-4435-86d5-3b51c14a9b1b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IUIAutomationLegacyIAccessiblePattern { void Select(int flags); void DoDefaultAction(); }
+    [ComImport, Guid("b488300f-d015-4f19-9c29-bb595e3645ef"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IUIAutomationScrollItemPattern { void ScrollIntoView(); }
+    [ComImport, Guid("6ba3d7a6-04cf-4f11-8793-a8d1cde9969f"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IUIAutomationVirtualizedItemPattern { void Realize(); }
 }

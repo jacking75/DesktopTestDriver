@@ -1,25 +1,24 @@
 param(
     [Parameter(Mandatory=$true)][string]$Controller,
-    [Parameter(Mandatory=$true)][string]$Machine,
-    [Parameter(Mandatory=$true)][string]$TargetScope,
-    [string]$Config
+    [Parameter(Mandatory=$true)][string]$Executable,
+    [string]$Machine,
+    [string]$StateDirectory
 )
+# Opens a session that launches an application, prints the compact tree of its first window, then closes the session
+# (which also stops the application).
 $ErrorActionPreference='Stop'
-$prefix=@()
-if($Config){$prefix=@('--config',[IO.Path]::GetFullPath($Config))}
+$common=@(); if($StateDirectory){$common=@('--state',[IO.Path]::GetFullPath($StateDirectory))}
+$machineArgs=@(); if($Machine){$machineArgs=@('--machine',$Machine)}
 $session=$null
 try {
-    $opened=& $Controller @prefix --session-open --machine $Machine --api-version 2 --mode observe --target-scope $TargetScope | ConvertFrom-Json
+    $opened=& $Controller @common --session-open @machineArgs --launch $Executable | ConvertFrom-Json
     if($LASTEXITCODE -ne 0){throw $opened.error.code}
     $session=$opened.controlSessionId
-    $request=@{apiVersion=2;requestId=[guid]::NewGuid().ToString('N');controlSessionId=$session;operation='windows';timeoutMilliseconds=5000;arguments=@{}}
-    $windows=($request | ConvertTo-Json -Compress -Depth 8) | & $Controller @prefix --request-stdin | ConvertFrom-Json
-    if($LASTEXITCODE -ne 0){throw $windows.error.code}
-    foreach($window in $windows.data.windows){
-        $request.requestId=[guid]::NewGuid().ToString('N');$request.operation='inspect';$request.arguments=@{windowId=$window.windowId}
-        ($request | ConvertTo-Json -Compress -Depth 8) | & $Controller @prefix --request-stdin
-        if($LASTEXITCODE -ne 0){throw 'inspect 실패이다.'}
-    }
+    $window=$opened.data.launch.window.windowId
+    $request=@{requestId=[guid]::NewGuid().ToString('N');controlSessionId=$session;operation='inspect';arguments=@{windowId=$window;maxDepth=6}}
+    $inspected=($request | ConvertTo-Json -Compress -Depth 8) | & $Controller @common --request-stdin | ConvertFrom-Json
+    if($LASTEXITCODE -ne 0){throw $inspected.error.code}
+    $inspected.data.tree
 } finally {
-    if($session){& $Controller @prefix --session-close $session | Out-Null;if($LASTEXITCODE -ne 0){throw '세션 정리 상태 확인이 필요하다.'}}
+    if($session){& $Controller @common --session-close $session | Out-Null}
 }

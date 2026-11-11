@@ -1,0 +1,75 @@
+{
+  "type": [
+    "object",
+    "null"
+  ],
+  "properties": {
+    "windowId": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "pid": {
+      "type": "integer"
+    },
+    "processName": {
+      "type": "string"
+    },
+    "bounds": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "foreground": {
+      "type": "boolean"
+    },
+    "className": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "ownerWindowId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "minimized": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "windowId",
+    "title",
+    "pid",
+    "processName",
+    "bounds",
+    "foreground"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

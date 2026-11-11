@@ -316,7 +316,7 @@ rect.c-bg-rect { fill: var(--bg); }
 
 
         <path data-edge-from="coding-agent" data-edge-to="controller" data-edge-label="CLI · JSON" data-edge-key="0" data-edge-id="cli-request" data-composition-points="260,200;380,200" d="M 260 200 L 380 200" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)" />
-        <path data-edge-from="controller" data-edge-to="remote-agent" data-edge-label="Network · TLS" data-edge-key="1" data-edge-id="remote-request" data-composition-points="570,200;760,200" d="M 570 200 L 760 200" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)" />
+        <path data-edge-from="controller" data-edge-to="remote-agent" data-edge-label="Network · plain TCP" data-edge-key="1" data-edge-id="remote-request" data-composition-points="570,200;760,200" d="M 570 200 L 760 200" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)" />
         <path data-edge-from="remote-agent" data-edge-to="remote-app" data-edge-label="Observe · Act" data-edge-key="2" data-edge-id="remote-action" data-composition-points="950,200;1070,200" d="M 950 200 L 1070 200" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)" />
 
 
@@ -373,9 +373,9 @@ rect.c-bg-rect { fill: var(--bg); }
           <rect x="280.0" y="174.0" width="80.0" height="22" rx="3" class="c-mask" />
           <text x="320" y="190" class="t-backend" font-size="13" text-anchor="middle">CLI · JSON</text>
         </g>
-        <g data-edge-from="controller" data-edge-to="remote-agent" data-edge-label="Network · TLS" data-edge-key="1" data-edge-id="remote-request">
+        <g data-edge-from="controller" data-edge-to="remote-agent" data-edge-label="Network · plain TCP" data-edge-key="1" data-edge-id="remote-request">
           <rect x="615.0" y="174.0" width="100.0" height="22" rx="3" class="c-mask" />
-          <text x="665" y="190" class="t-security" font-size="13" text-anchor="middle">Network · TLS</text>
+          <text x="665" y="190" class="t-security" font-size="13" text-anchor="middle">Network · plain TCP</text>
         </g>
         <g data-edge-from="remote-agent" data-edge-to="remote-app" data-edge-label="Observe · Act" data-edge-key="2" data-edge-id="remote-action">
           <rect x="961.0" y="174.0" width="98.0" height="22" rx="3" class="c-mask" />
