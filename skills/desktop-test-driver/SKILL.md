@@ -29,8 +29,11 @@ The operation fields go in `arguments`. `timeoutMilliseconds`, `requestId` and `
  "arguments":{"windowId":"w1","selector":{"automationId":"Status"},"condition":"name-contains","expected":"완료"}}
 ```
 
+`timeoutMilliseconds` is 1-5000 for every operation except `wait-condition`, `wait-window`, `launch` and `open`, which
+allow up to 30000. Wait longer than 30 s by sending another wait.
+
 Each tool description lists the arguments of its operations. An argument error repeats the expected arguments of
-the operation, so read the error message and fix the request.
+the operation, so read the error message and fix the request. Using the CLI? The request object differs; see section 7.
 
 ## 2. Core loop
 
@@ -55,13 +58,30 @@ the operation, so read the error message and fix the request.
 4. **Act.** `gui_act set-value {windowId, elementId:"e5", snapshotToken:"b2d40c2611bd", value:"text",
    expect:{selector:{automationId:"MemoText"}, condition:"value-equals", expected:"text"}}`.
    - Check `data.expect.satisfied`.
-   - Add `observeAfter:{includeNewWindows:true, maxDepth:3}` when the action may open a dialog. New windows come back in `data.after.newWindows`.
+   - `data.target` in an action response is the element **before** the action. Read the outcome through `expect`
+     or a new find.
+   - Add `observeAfter:{includeNewWindows:true, maxDepth:3}` when the action may open a dialog. New windows come back
+     in `data.after.newWindows`.
+   - A modal dialog appears both as its own window (`w2`) and inside its owner's tree (`data.after.tree`). Refs from
+     either work with the windowId they came from.
 5. **Wait.** `gui_wait wait-condition` (up to 30 s; poll is 100 ms).
    - Use `anyOf:[…]` to wait for success or an error dialog at once; `matchedIndex` tells which one matched.
    - A timeout is `completed` with `satisfied:false`: that is a result, not a tool failure.
 6. **Judge** the product outcome: re-read values, reopen files, check other systems. `completed` only means the request ran.
 7. **Close.** `gui_session {action:"close", sessionId}`. It stops launched apps, closes windows opened by `open`, and releases input.
    Report `terminatedProcessIds`, `closedWindowIds` and `retainedWindowIds` when they matter.
+
+**Restart within a session.** Close the window (`gui_window close-window`), then start the app again with
+`gui_window launch {executable, arguments:[…], waitWindow:{titleContains:"…"}}`. The new window has a new windowId and
+new refs.
+
+**Standard Open/Save file dialogs.** Put the full path into the file name field, then invoke the default button:
+
+- Find the file name field with `find-element {selector:{controlType:"Edit", name:"파일 이름:"}}` or
+  `{automationId:"1148"}`.
+  - In a Save dialog it may be the ComboBox `#FileNameControlHost` (it supports Value).
+  - Labels follow the Windows language (`File name:` in English).
+- `set-value` the full path, then `invoke` the button `#1` (Open/Save). Add `expect` on the app (title or content) to confirm.
 
 ## 3. Statuses and what to do
 
@@ -126,11 +146,20 @@ Run one controller host: `Controller.exe --serve`. Then send requests in either 
 
 Other commands:
 
-- Sessions: `Controller.exe --session-open --launch C:\path\App.exe`, then `--session-close ID`, `--session-status ID`, and
-  `--session-reconcile ID --request-id R --resolution no-effect-confirmed --resume`.
-- Argument reference: `Controller.exe --operations [operation]`. Full reference: `docs/agent-usage.md`.
+- Sessions:
+  - Open: `Controller.exe --session-open --launch C:\path\App.exe --arg --quiet --arg C:\data\file.txt`
+    (`--arg` repeats, one per argument).
+  - Then `--session-close ID`, `--session-status ID`, and
+    `--session-reconcile ID --request-id R --resolution no-effect-confirmed --resume`.
+  - `Controller.exe --help` lists every command.
+- Argument reference: `Controller.exe --operations [operation]` (it includes the timeout limit). Full reference:
+  `docs/agent-usage.md`.
 - If the host was started with `--state DIR`, every CLI call needs the same `--state DIR`.
-- In the CLI, timeoutMilliseconds, requestId and note are fields of the request object itself:
+- **Non-ASCII text (Korean and so on):** Windows PowerShell 5.1 may re-encode piped text and break it. Write the
+  request to a UTF-8 file and use `--request FILE`, or set `$OutputEncoding = [Text.UTF8Encoding]::new($false)` before
+  piping to `--request-stdin` / `--json-lines`.
+- The CLI request uses `controlSessionId` (not `sessionId`). `timeoutMilliseconds`, `requestId` and `note` are fields
+  of the request object itself:
 
 ```json
 {"requestId":"r1","controlSessionId":"control-…","operation":"invoke","timeoutMilliseconds":5000,

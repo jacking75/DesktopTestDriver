@@ -26,7 +26,8 @@ internal static class Program
             DockPanel.SetDock(list,Dock.Bottom);panel.Children.Add(list);
         }
         panel.Children.Add(edit); window.Content = panel;
-        if (args.Length == 1 && !args[0].StartsWith("--",StringComparison.Ordinal)) try { Load(args[0]); } catch (Exception e) { MessageBox.Show(e.Message); }
+        // The first argument that is not an option is a file to open, so "--quiet C:\memo.txt" works too.
+        if (args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal)) is { } file) try { Load(file); } catch (Exception e) { MessageBox.Show(e.Message); }
         app.Run(window);
     }
 }

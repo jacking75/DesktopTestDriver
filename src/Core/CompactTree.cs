@@ -21,7 +21,8 @@ public static class CompactTree
     public static string Line(ObservationNode n, bool includeBounds)
     {
         var line = new StringBuilder("- ").Append(n.ControlType);
-        if (n.AutomationId.Length > 0) line.Append(" #").Append(n.AutomationId);
+        // An automationId with spaces or quotes is quoted so it cannot run into the name.
+        if (n.AutomationId.Length > 0) line.Append(" #").Append(n.AutomationId.Any(c => char.IsWhiteSpace(c) || c == '"') ? "\"" + Escape(n.AutomationId) + "\"" : n.AutomationId);
         if (n.Name.Length > 0) line.Append(" \"").Append(Escape(Clip(n.Name))).Append('"');
         line.Append(" [").Append(n.ElementId).Append(" t=").Append(n.SnapshotToken).Append(']');
         if (!n.Enabled) line.Append(" disabled");

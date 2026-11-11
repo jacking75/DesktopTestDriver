@@ -81,7 +81,7 @@ public static class GuiProtocol
     {
         var d = Operations.Find(r.Operation) ?? throw new GuiException("UnsupportedOperation", "Unknown operation '" + r.Operation + "'. Operations: " + string.Join(", ", Operations.All.Select(o => o.Operation)));
         if (!Id(r.RequestId) || !Id(r.ControlSessionId)) throw new GuiException("InvalidRequest");
-        if (r.TimeoutMilliseconds < 1 || r.TimeoutMilliseconds > d.MaxTimeout) throw new GuiException("InvalidTimeout");
+        if (r.TimeoutMilliseconds < 1 || r.TimeoutMilliseconds > d.MaxTimeout) throw new GuiException("InvalidTimeout", "timeoutMilliseconds " + r.TimeoutMilliseconds + " is out of range for " + r.Operation + ": 1-" + d.MaxTimeout + " (waits, launch and open allow up to 30000; split longer waits into several requests)");
         if (r.Note is { Length: > 120 }) throw new GuiException("InvalidNote");
         ArgumentValidator.Validate(r.Operation, r.Arguments);
     }

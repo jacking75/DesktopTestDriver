@@ -6,7 +6,7 @@ namespace DesktopTestDriver;
 public static class OperationHelp
 {
     private const string Element = "windowId, elementId, snapshotToken";
-    private const string After = " [expect?{selector,condition,expected?,timeoutMilliseconds?}, observeAfter?{maxDepth?,includeNewWindows?,settleMilliseconds?,rootElementId?,rootSnapshotToken?}]";
+    private const string After = " [expect?{selector,condition,expected?,timeoutMilliseconds?}, observeAfter?{maxDepth?,includeNewWindows?,settleMilliseconds?,rootElementId?,rootSnapshotToken?}] — result: target = the element BEFORE the action (use expect to read the outcome), dispatchKind";
     private const string Selector = "selector{automationId|automationIdRegex|name|nameContains|nameStartsWith|nameRegex|controlType|className|frameworkId|ancestorAutomationId|parent{…}|index}";
     private const string WindowFilter = "title?|titleContains?|titleRegex?|className?|kind?(main|owned|popup)|processName?|ownerWindowId? (at least one)";
     public static readonly IReadOnlyDictionary<string, string> Arguments = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -51,6 +51,7 @@ public static class OperationHelp
         ["drag"] = "windowId, start{x,y}, end{x,y}, captureId?, button?, steps?(1-100) — input session",
         ["release-input"] = "(none) — releases keys and buttons this session holds"
     };
-    public static string For(string operation) => Arguments.TryGetValue(operation, out var text) ? operation + ": " + text : operation;
+    /// <summary>Includes the request timeout limit, the most common mistake when a request is built by hand.</summary>
+    public static string For(string operation) => (Arguments.TryGetValue(operation, out var text) ? operation + ": " + text : operation) + (Operations.Find(operation) is { } d ? " (timeoutMilliseconds ≤ " + d.MaxTimeout + ")" : "");
     public static string Reference(IEnumerable<string> operations) => string.Join("\n", operations.Select(For));
 }

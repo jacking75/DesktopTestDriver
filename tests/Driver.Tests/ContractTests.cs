@@ -25,7 +25,9 @@ internal static class ContractTests
             Parse(new { requestId = "r1", controlSessionId = "s1", operation = "wait-condition", timeoutMilliseconds = 30000, arguments = new { windowId = "w1", selector = new { automationId = "A" }, condition = "exists" } });
             Parse(new { requestId = "r1", controlSessionId = "s1", operation = "wait-window", timeoutMilliseconds = 30000, arguments = new { title = "x" } });
             Reject("InvalidTimeout", new { requestId = "r1", controlSessionId = "s1", operation = "wait-condition", timeoutMilliseconds = 30001, arguments = new { windowId = "w1", selector = new { automationId = "A" }, condition = "exists" } });
-            Reject("InvalidTimeout", new { requestId = "r1", controlSessionId = "s1", operation = "invoke", timeoutMilliseconds = 5001, arguments = new { windowId = "w1", elementId = "e1", snapshotToken = "abcdefabcdef" } });
+            try { Parse(new { requestId = "r1", controlSessionId = "s1", operation = "invoke", timeoutMilliseconds = 10000, arguments = new { windowId = "w1", elementId = "e1", snapshotToken = "abcdefabcdef" } }); throw new Exception("accepted"); }
+            catch (GuiException e) { Equal("InvalidTimeout", e.Code, "code"); Check(e.Message.Contains("10000") && e.Message.Contains("1-5000"), e.Message); }
+            Check(OperationHelp.For("invoke").Contains("timeoutMilliseconds ≤ 5000") && OperationHelp.For("wait-condition").Contains("≤ 30000"), "help shows limits");
             return Task.CompletedTask;
         }),
         ("C03 3.6 wait conditions require a valid expected value", () =>
@@ -101,6 +103,8 @@ internal static class ContractTests
             };
             var text = CompactTree.Format(nodes, false);
             Equal("- Window \"간단 메모\" [e1 t=3fa9c1d20b7e]\n  - Edit #MemoText \"메모\" [e2 t=91b04c77a2d1] value=\"테스트 메모입니다\" patterns=Value\n  - Button #OpenButton \"열기\" [e4 t=0a7711e3bb52] disabled patterns=Invoke\n", text, "compact");
+            var spaced = CompactTree.Line(nodes[0] with { AutomationId = "Item 1", Name = "System" }, false);
+            Check(spaced.Contains("#\"Item 1\" \"System\""), spaced);
             var longValue = CompactTree.Line(nodes[1] with { Value = new(true, new string('x', 250), null) }, false);
             Check(longValue.Contains("…(+50)"), longValue);
             return Task.CompletedTask;
