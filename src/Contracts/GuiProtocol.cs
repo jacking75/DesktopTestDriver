@@ -79,7 +79,7 @@ public static class GuiProtocol
     /// <summary>Validates one request. Called at the controller boundary and again at the agent without re-encoding.</summary>
     public static void Validate(GuiRequest r)
     {
-        var d = Operations.Find(r.Operation) ?? throw new GuiException("UnsupportedOperation");
+        var d = Operations.Find(r.Operation) ?? throw new GuiException("UnsupportedOperation", "Unknown operation '" + r.Operation + "'. Operations: " + string.Join(", ", Operations.All.Select(o => o.Operation)));
         if (!Id(r.RequestId) || !Id(r.ControlSessionId)) throw new GuiException("InvalidRequest");
         if (r.TimeoutMilliseconds < 1 || r.TimeoutMilliseconds > d.MaxTimeout) throw new GuiException("InvalidTimeout");
         if (r.Note is { Length: > 120 }) throw new GuiException("InvalidNote");
@@ -89,9 +89,9 @@ public static class GuiProtocol
     {
         if (e.ValueKind != JsonValueKind.Object) throw new GuiException("UnknownField");
         var names = allowed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var p in e.EnumerateObject()) if (!names.Contains(p.Name)) throw new GuiException("UnknownField", "UnknownField: " + p.Name);
+        foreach (var p in e.EnumerateObject()) if (!names.Contains(p.Name)) throw new GuiException("UnknownField", "Unknown field '" + p.Name + "' (allowed: " + (names.Length == 0 ? "none" : string.Join(", ", names)) + ")");
     }
-    public static string Text(JsonElement a, string name) => a.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s ? s : throw new GuiException("InvalidRequest", "InvalidRequest: " + name);
+    public static string Text(JsonElement a, string name) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s ? s : throw new GuiException("InvalidRequest", "Field '" + name + "' must be a non-empty string");
     public static string? OptionalText(JsonElement a, string name) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.GetString() : null;
     public static int? OptionalInt(JsonElement a, string name) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.GetInt32() : null;
     public static bool Flag(JsonElement a, string name, bool fallback = false) => a.ValueKind == JsonValueKind.Object && a.TryGetProperty(name, out var v) && v.ValueKind != JsonValueKind.Null ? v.GetBoolean() : fallback;

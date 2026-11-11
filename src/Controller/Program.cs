@@ -7,6 +7,8 @@ try
 {
     var list = args.ToList();
     if (list is ["--help"] || list is ["-h"]) { Console.WriteLine(ControllerCli.Help); return 0; }
+    if (list is ["--operations"]) { Console.WriteLine(OperationHelp.Reference(Operations.All.Select(o => o.Operation))); return 0; }
+    if (list is ["--operations", var operationName]) { if (!Operations.Contains(operationName)) throw new GuiException("UnsupportedOperation", "Unknown operation " + operationName); Console.WriteLine(OperationHelp.For(operationName)); return 0; }
     if (list is ["--export-schemas", var schemaDirectory])
     {
         Directory.CreateDirectory(schemaDirectory);
@@ -55,6 +57,7 @@ internal static class ControllerCli
           --inspect --session ID --window W   --trace-export SESSION OUTPUT_DIR
         Diagnostics
           --status [--machine M]   --doctor [--machine M]   --export-schemas DIR
+          --operations [OPERATION]   arguments of every operation (the same reference the MCP tools carry)
         Common options: --listen ADDR:PORT --state DIR --config FILE
         Usage guide: {Path.Combine(AppContext.BaseDirectory, "docs", "agent-usage.md")}
         """;

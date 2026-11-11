@@ -70,7 +70,7 @@ Output goes to `bin/live_Release`. Target PCs need the .NET 10 Desktop Runtime x
 
 ### 2. Run
 
-No configuration file is needed; command-line options are enough. The default port is 25001.
+No configuration file is needed; command-line options are enough. The default port is 25001. `--serve` and the agent keep running, so start each in its own terminal.
 
 ```powershell
 # Same PC
@@ -86,8 +86,8 @@ No configuration file is needed; command-line options are enough. The default po
 | Default | Value |
 |---|---|
 | Controller listen address | `127.0.0.1:25001` (change with `--listen` only to accept remote agents) |
-| State folders | `%LOCALAPPDATA%\DesktopTestDriver\Controller`, `...\Agent` (change with `--state`) |
-| Agent machineId | The computer name (change with `--machine`) |
+| State folders | `%LOCALAPPDATA%\DesktopTestDriver\Controller`, `...\Agent` (change with `--state`). If the controller runs with `--state`, pass the same `--state` to every CLI command (the local pipe name is derived from it) |
+| Agent machineId | The computer name in lower case (change with `--machine`) |
 
 For a resident setup use `scripts\manage.ps1 -Action Start|Stop|Status|Restart|InstallLogonTask`. To drive elevated tools (regedit, Services) run the agent elevated (`InstallLogonTask -Highest`).
 
@@ -121,7 +121,16 @@ Add it to Claude Code as an MCP server. When no controller is running, the MCP s
 claude mcp add desktop-test-driver -- C:\DesktopTestDriver\Controller\Controller.exe --mcp
 ```
 
-There are six tools: `gui_session`, `gui_window`, `gui_observe`, `gui_act`, `gui_wait`, `gui_capture`. A companion skill file is in [skills/desktop-test-driver/SKILL.md](skills/desktop-test-driver/SKILL.md). For an agent that only uses the CLI:
+There are six tools: `gui_session`, `gui_window`, `gui_observe`, `gui_act`, `gui_wait`, `gui_capture`. Their descriptions list the arguments of every operation, and an argument error repeats the expected arguments.
+
+The companion skill is [skills/desktop-test-driver/SKILL.md](skills/desktop-test-driver/SKILL.md): setup checks, request shape, what to do for each error, cleanup and reporting, and CLI use when MCP is not available. Copy the folder so Claude Code picks it up:
+
+```powershell
+Copy-Item -Recurse skills\desktop-test-driver $env:USERPROFILE\.claude\skills\   # all projects
+Copy-Item -Recurse skills\desktop-test-driver .\.claude\skills\                   # this project only
+```
+
+For agents without MCP (Codex and others), point them to `Controller.exe --operations` (arguments of every operation) and the [reference](docs/agent-usage.md). For an agent that only uses the CLI:
 
 > The controller is `C:\DesktopTestDriver\Controller\Controller.exe`. Read the reference, then test typing, saving, closing and reopening in `C:\GuiTest\SimpleMemo.exe`. It passes only if the reopened text matches. Use UIA actions and condition waits; on failure keep the request ID and the observed evidence. Do not repeat an action whose result was `completionUnknown`. Close the session you opened and report confirmed and unconfirmed items separately.
 
@@ -147,7 +156,7 @@ There are three test groups. Contract and handler tests use a fake desktop to ch
 | `src/Core/`, `src/Contracts/` | Transport, UIA, input and cleanup, plus request/response contracts |
 | `fixtures/`, `tests/` | Test applications (SimpleMemo, FormsWorkbench, WpfWorkbench, InputWindow) and automated checks |
 | `schemas/`, `examples/standalone/` | DTO schemas (generated with `--export-schemas`) and a standalone example |
-| `scripts/`, `docs/`, `skills/` | Start/stop script, documentation, Claude Code skill |
+| `scripts/`, `docs/`, `skills/` | Scripts (`manage.ps1`, package check, icon generator `make-icons.ps1`), documentation, Claude Code skill |
 
 </details>
 

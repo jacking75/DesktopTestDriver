@@ -9,13 +9,18 @@ using DesktopTestDriver;
 internal static class McpServer
 {
     private const string Instructions = """
-        DesktopTestDriver drives Windows GUIs through UI Automation: find elements by automationId/name, act on them and read values as strings.
-        Workflow: gui_session open (launch an app or name a target) -> gui_window windows -> gui_observe inspect (compact tree, refs like e12 with t=token)
-        -> gui_act with elementId+snapshotToken -> gui_wait for the result. Prefer UIA operations (invoke, set-value, set-toggle, select-item)
-        over real input; real input (click, type-text, key) needs a session opened with input=true and the window in the foreground.
-        Rules: a ref is valid only for the window it came from; StaleElement means re-run find-element or inspect. AmbiguousTarget lists candidates:
-        refine the selector or pass index. Waits return completed with satisfied=false on timeout. A completionUnknown result blocks the session:
-        check it with gui_session status, then reconcile. Use expect/observeAfter on actions to avoid extra round trips.
+        DesktopTestDriver drives Windows GUIs through UI Automation: find elements by automationId/name, act on them, read values as strings.
+        Prerequisite: Agent.exe must run in the logged-on desktop of the target PC. gui_session {action:"agents"} lists connected agents;
+        if none, ask the user to start Agent.exe. {action:"doctor"} checks UIA, capture and input on the agent.
+        Workflow: gui_session open {launch:"C:\\path\\App.exe"} returns data.launch.window.windowId -> gui_observe inspect {windowId}
+        (compact tree; "[e12 t=1d93122bc0be]" = elementId e12, snapshotToken 1d93122bc0be) -> gui_act {windowId, elementId, snapshotToken, ...}
+        -> gui_wait wait-condition -> judge the product result -> gui_session close.
+        Request fields: put operation fields in "arguments"; timeoutMilliseconds, requestId and note are tool parameters, not arguments.
+        Prefer UIA operations over real input. Real input (click, type-text, key, chord) needs open with input=true and a foreground window.
+        Errors: StaleElement -> find again. AmbiguousTarget -> error.data.candidates, narrow the selector or add index. SearchIncomplete -> use an
+        automationId outside lists or arguments.completeness="realized". A wait timeout is completed with satisfied=false.
+        completionUnknown blocks the session: do not repeat the action; observe, then gui_session reconcile {requestId, resolution, resume:true}.
+        Argument errors repeat the expected arguments of the operation. Use expect/observeAfter on actions to save round trips.
         """;
     private static readonly string[] WindowOps = ["windows", "find-window", "window-state", "focus", "close-window", "launch", "open", "terminate-owned"];
     private static readonly string[] ObserveOps = ["inspect", "find-element", "capabilities", "find-item", "read-grid", "read-text", "generate-selector", "clipboard-get"];
@@ -34,6 +39,13 @@ internal static class McpServer
             ["note"] = new JsonObject { ["type"] = "string", ["description"] = "Optional human-readable intent (<=120 chars), kept in the trace" }
         },
         ["required"] = new JsonArray("sessionId", "operation")
+    };
+    /// <summary>A request tool whose description carries the argument reference of each of its operations.</summary>
+    private static JsonObject Tool(string name, string summary, string[] operations) => new()
+    {
+        ["name"] = name,
+        ["description"] = summary + "\nArguments per operation (? = optional):\n" + OperationHelp.Reference(operations),
+        ["inputSchema"] = Schema(operations, "Operation fields as listed in the tool description, e.g. {\"windowId\":\"w1\",\"elementId\":\"e4\",\"snapshotToken\":\"1d93122bc0be\"}")
     };
     private static JsonArray Tools() => [
         new JsonObject
@@ -60,10 +72,10 @@ internal static class McpServer
                 ["required"] = new JsonArray("action")
             }
         },
-        new JsonObject { ["name"] = "gui_window", ["description"] = "List and manage top-level windows; launch an .exe or open URIs, control panel items, .msc/.cpl files and documents (waitWindow returns the new window).", ["inputSchema"] = Schema(WindowOps, "Operation arguments, e.g. {} for windows, {title|titleContains|className|kind} for find-window, {executable, arguments, waitWindow:{timeoutMilliseconds,titleContains}} for launch, {target:'ms-settings:about', waitWindow:{...}} for open") },
-        new JsonObject { ["name"] = "gui_observe", ["description"] = "Read UI: inspect returns a compact tree (one line per element with ref and token). find-element takes selector {automationId|name|nameContains|nameRegex|controlType|className|parent|index} or selectors[].", ["inputSchema"] = Schema(ObserveOps, "Always include windowId. inspect: {windowId, maxDepth?, rootElementId?, rootSnapshotToken?, interactiveOnly?, includeBounds?}. find-element: {windowId, selector}") },
-        new JsonObject { ["name"] = "gui_act", ["description"] = "Change UI state. UIA: invoke, set-value, set-toggle, select-item, set-expanded, set-range-value, set-focus, legacy-default-action, scroll... Real input (input session only): click, type-text, key, chord, move, wheel, drag, release-input. Optional expect {selector, condition, expected} and observeAfter {maxDepth, includeNewWindows} return the result in the same call.", ["inputSchema"] = Schema(ActOps, "{windowId, elementId, snapshotToken, ...operation fields}") },
-        new JsonObject { ["name"] = "gui_wait", ["description"] = "Wait for a condition (exists, absent, enabled, disabled, value-equals, value-not-equals, text-contains, name-equals, name-contains, toggle-equals, selected-equals, expanded-equals, onscreen, offscreen) or anyOf (up to 4), or for a window. Up to 30 s. Timeout returns satisfied=false.", ["inputSchema"] = Schema(WaitOps, "wait-condition: {windowId, selector, condition, expected?} or {windowId, anyOf:[...]}; wait-window: {title|titleContains|className}") },
+        Tool("gui_window", "List and manage top-level windows; start an .exe (launch) or open a URI, control panel item, .msc/.cpl or document (open). New windows join the session scope.", WindowOps),
+        Tool("gui_observe", "Read the UI. inspect returns a compact tree, one element per line: `- Button #SaveButton \"저장\" [e4 t=1d93122bc0be] patterns=Invoke` (#=automationId, e4=elementId, t=snapshotToken). Refs are valid only for that window.", ObserveOps),
+        Tool("gui_act", "Change UI state. Prefer UIA operations; real input operations need a session opened with input=true. expect/observeAfter return the effect in the same call. A rejected status means nothing happened.", ActOps),
+        Tool("gui_wait", "Wait until a condition holds (or the first of anyOf), or until a window appears. Set timeoutMilliseconds (tool parameter, up to 30000). A timeout returns completed with satisfied=false, not an error.", WaitOps),
         new JsonObject
         {
             ["name"] = "gui_capture", ["description"] = "Screenshot of a window client area, a region or one element (scale 0.25-1 to save tokens). Returns the PNG path; image=true also returns the image.",
@@ -138,11 +150,29 @@ internal static class McpServer
                 var a = p?["arguments"] as JsonObject ?? new JsonObject();
                 var (response, image) = await Call(settings, name, a);
                 var content = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = GuiProtocol.Encode(response) });
+                // Trees are also given unescaped so they read as indented lines instead of one string full of \n.
+                foreach (var (label, tree) in Trees(response)) content.Add(new JsonObject { ["type"] = "text", ["text"] = label + "\n" + tree });
                 if (image != null) content.Add(new JsonObject { ["type"] = "image", ["data"] = image, ["mimeType"] = "image/png" });
                 return new JsonObject { ["content"] = content, ["isError"] = response.Status is not ("completed" or "running") };
             }
             default: throw new InvalidOperationException("Method not found: " + method);
         }
+    }
+    private static IEnumerable<(string Label, string Tree)> Trees(GuiResponse response)
+    {
+        static string? Text(JsonElement e, params string[] path)
+        {
+            foreach (var p in path) { if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(p, out e)) return null; }
+            return e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        }
+        if (response.Data != null)
+        {
+            var data = GuiProtocol.Element(response.Data);
+            if (Text(data, "tree") is { Length: > 0 } tree) yield return ("tree:", tree);
+            if (Text(data, "after", "tree") is { Length: > 0 } after) yield return ("after (observeAfter):", after);
+        }
+        if (response.Error?.Data != null && Text(GuiProtocol.Element(response.Error.Data), "context", "tree") is { Length: > 0 } context)
+            yield return ("context (top of the window at the time of the error):", context);
     }
     private static string? S(JsonObject a, string name) => a[name]?.GetValue<string>();
     private static bool B(JsonObject a, string name) => a[name]?.GetValue<bool>() == true;

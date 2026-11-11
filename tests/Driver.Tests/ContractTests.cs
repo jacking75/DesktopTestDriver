@@ -121,6 +121,17 @@ internal static class ContractTests
             await GuiWire.Write(stream, new string('x', 3 * 1024 * 1024), CancellationToken.None);
             stream.Position = 0; Equal(3 * 1024 * 1024, (await GuiWire.Read<string>(stream, CancellationToken.None)).Length, "3 MiB frame");
         }),
+        ("C13 agent ergonomics: every operation has an argument reference; argument errors repeat it", () =>
+        {
+            foreach (var d in Operations.All) Check(OperationHelp.Arguments.ContainsKey(d.Operation), "no help for " + d.Operation);
+            try { Parse(new { requestId = "r1", controlSessionId = "s1", operation = "set-toggle", arguments = new { windowId = "w1", elementId = "e1", snapshotToken = "0123456789ab", state = "on" } }); throw new Exception("accepted"); }
+            catch (GuiException e) { Equal("UnknownField", e.Code, "code"); Check(e.Message.Contains("'state'") && e.Message.Contains("desiredState(on|off|indeterminate)"), e.Message); }
+            try { Parse(new { requestId = "r1", controlSessionId = "s1", operation = "set-expanded", arguments = new { windowId = "w1", elementId = "e1", snapshotToken = "0123456789ab" } }); throw new Exception("accepted"); }
+            catch (GuiException e) { Equal("InvalidRequest", e.Code, "code"); Check(e.Message.Contains("expanded(true|false)"), e.Message); }
+            try { Parse(new { requestId = "r1", controlSessionId = "s1", operation = "press", arguments = new { } }); throw new Exception("accepted"); }
+            catch (GuiException e) { Check(e.Message.Contains("invoke") && e.Message.Contains("type-text"), e.Message); }
+            return Task.CompletedTask;
+        }),
         ("C12 1.1 settings come from arguments; default port 25001", () =>
         {
             var args = new List<string> { "--listen", "0.0.0.0:25010", "--state", @"C:\Temp\dtd-state", "--serve" };

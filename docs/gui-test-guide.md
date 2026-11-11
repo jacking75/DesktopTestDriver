@@ -15,13 +15,15 @@
 
 ## 1. 실행한다
 
-같은 PC라면:
+같은 PC라면 배포 폴더(`bin\live_Release`)에서 호스트 두 개를 띄운다. `--serve`와 Agent는 끝날 때까지 실행되므로 각각 별도 터미널에서 실행하거나 `scripts\manage.ps1 -Action Start`로 백그라운드에 띄운다.
 
 ```powershell
-.\Controller\Controller.exe --serve
-.\Agent\Agent.exe
-.\Controller\Controller.exe --status
+.\Controller\Controller.exe --serve      # 터미널 1
+.\Agent\Agent.exe                        # 터미널 2
+.\Controller\Controller.exe --status     # 터미널 3: 이후 명령은 모두 여기서
 ```
+
+아래 예시는 `Controller` 폴더 안에서 실행한다고 보고 `.\Controller.exe`로 적는다. 호스트를 `--state`로 띄웠다면 모든 명령에 같은 `--state`를 준다.
 
 테스트 PC가 따로 있으면 Controller를 `--listen 0.0.0.0:25001`로, Agent를 `--controller 주소:25001 --machine test-pc`로 실행한다. 설정 파일·인증서·등록 절차는 없다. `--doctor`로 Agent가 실제로 UIA·캡처·입력 감시를 쓸 수 있는지 확인한다.
 
@@ -86,7 +88,15 @@ $window = $open.data.launch.window.windowId      # 예: w1
 
 ## 5. 닫고 다시 열어 확인한다
 
-창을 닫고(`close-window`), 같은 파일로 다시 실행한다(`launch`에 `arguments: ["C:\\GuiTest\\memo.txt"]`, `waitWindow`). 새 창에서 `find-element`로 `MemoText`를 찾아 `value.text`가 입력한 글과 같은지 본다. 같아야 통과다.
+창을 닫고(`close-window`), 같은 파일로 다시 실행한다.
+
+```json
+{"requestId":"memo-reopen","controlSessionId":"…","operation":"launch","timeoutMilliseconds":15000,
+ "arguments":{"executable":"C:\\GuiTest\\SimpleMemo.exe","arguments":["C:\\GuiTest\\memo.txt"],
+   "waitWindow":{"titleContains":"memo.txt","timeoutMilliseconds":10000}}}
+```
+
+응답의 `data.window.windowId`가 새 창이다. 창 ID와 요소 참조는 창마다 다르므로 앞 창의 `e5`를 쓰지 않는다. 새 창에서 `find-element`로 `MemoText`를 찾아 `value.text`가 입력한 글과 같은지 본다. 같아야 통과다.
 
 ## 6. 실패하거나 응답이 끊기면
 
@@ -113,10 +123,10 @@ $window = $open.data.launch.window.windowId      # 예: w1
 
 | 대상 | 여는 방법 | 참고 |
 |---|---|---|
-| 설정 앱 | `open` `{"target":"ms-settings:about","waitWindow":{"className":"ApplicationFrameWindow","timeoutMilliseconds":15000}}` | 창 틀은 `ApplicationFrameHost.exe`, 내용은 `SystemSettings.exe`가 그린다. 둘 다 범위에 든다. 목록은 가상화되어 있으므로 `automationId`로 찾거나 `completeness: "realized"`를 쓴다 |
+| 설정 앱 | `open` `{"target":"ms-settings:about","waitWindow":{"className":"ApplicationFrameWindow","timeoutMilliseconds":15000}}` | 프레임 창(`ApplicationFrameWindow`)을 돌려주며, 그 창의 UIA 트리에 설정 화면 내용이 함께 나온다. 화면을 그리는 데 시간이 걸리므로 `inspect`를 짧게 반복하거나 `wait-condition`으로 기다린다. 이미 설정 앱이 열려 있었다면 그 창을 돌려주고, 세션을 닫아도 닫지 않는다. 목록 컨트롤이 있어 `SearchIncomplete`가 나면 `automationId`로 찾거나 `completeness: "realized"`를 쓴다 |
 | 제어판 | `open` `{"target":"control.exe","waitWindow":{"className":"CabinetWClass"}}` | `explorer.exe`가 창을 가진다. 세션을 닫으면 창만 닫고 explorer는 종료하지 않는다 |
-| 관리 콘솔(.msc) | `open` `{"target":"services.msc","verb":"runas"}` | Agent를 관리자로 실행해야 한다. 아니면 `ElevationRequired` |
+| 관리 콘솔(.msc) | `open` `{"target":"services.msc","verb":"runas"}` | `runas`는 Agent를 관리자로 실행해야 한다. 아니면 `ElevationRequired`. 관리자 권한으로 뜬 창은 일반 권한 Agent에서 `TargetElevated`로 거부된다 |
 | 메뉴·드롭다운 | `set-expanded` 뒤 `windows`에 `kind: "popup"` | 팝업은 제목 없는 별도 창이다 |
-| Win32 목록·트리 | `read-grid`, `select-item`, `set-expanded` | `Value`가 없으면 `LegacyIAccessible` 값으로 읽는다(`value.source: "legacy"`). 동작하지 않으면 `legacy-default-action` |
+| Win32 목록·트리 | `read-grid`, `select-item`, `set-expanded` | `Value`가 없으면 `LegacyIAccessible` 값으로 읽는다(`value.source: "legacy"`). 패턴 조작이 동작하지 않으면 `legacy-default-action`. `SysListView32`·`SysTreeView32`·속성 시트는 아직 실제 대상으로 확인하지 않았다 |
 
 Windows 버전에 따라 화면 구성이 다르므로 이런 대상의 시험은 "지정한 요소를 찾고 값을 읽는다"처럼 좁게 판정한다.

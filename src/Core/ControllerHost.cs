@@ -68,7 +68,7 @@ public sealed class ControllerHost
     {
         if (machine != null) return Agent(machine);
         var connected = agents.Values.Where(a => a.Peer.Connected).ToArray();
-        return connected.Length == 1 ? connected[0] : throw new GuiException(connected.Length == 0 ? "AgentDisconnected" : "MachineRequired", connected.Length == 0 ? "No agent is connected" : "Several agents are connected; pass --machine");
+        return connected.Length == 1 ? connected[0] : throw new GuiException(connected.Length == 0 ? "AgentDisconnected" : "MachineRequired", connected.Length == 0 ? "No agent is connected. Start Agent.exe in the logged-on desktop of the target PC (Agent.exe --controller HOST:PORT for a remote controller)" : "Several agents are connected; pass --machine");
     }
     private SessionInfo Session(string id) => sessions.TryGetValue(id, out var s) ? s : throw new GuiException("SessionNotFound");
     private void Remember(SessionInfo info) { sessions[info.ControlSessionId] = info; store.Write("session-" + info.ControlSessionId + ".json", info, durable: false); }

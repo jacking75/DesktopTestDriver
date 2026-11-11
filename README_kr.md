@@ -70,7 +70,7 @@ Windows 10/11 x64와 .NET 10 SDK가 있는 PC에서 실행한다.
 
 ### 2. 실행한다
 
-설정 파일 없이 실행 인자만으로 뜬다. 기본 포트는 25001이다.
+설정 파일 없이 실행 인자만으로 뜬다. 기본 포트는 25001이다. `--serve`와 Agent는 끝날 때까지 실행되므로 각각 별도 터미널에서 띄운다.
 
 ```powershell
 # 같은 PC
@@ -86,8 +86,8 @@ Windows 10/11 x64와 .NET 10 SDK가 있는 PC에서 실행한다.
 | 기본값 | 값 |
 |---|---|
 | Controller 수신 주소 | `127.0.0.1:25001` (원격 Agent를 받을 때만 `--listen`으로 바꾼다) |
-| 상태 폴더 | `%LOCALAPPDATA%\DesktopTestDriver\Controller`, `...\Agent` (`--state`로 바꾼다) |
-| Agent의 machineId | 컴퓨터 이름 (`--machine`으로 바꾼다) |
+| 상태 폴더 | `%LOCALAPPDATA%\DesktopTestDriver\Controller`, `...\Agent` (`--state`로 바꾼다). Controller를 `--state`로 띄웠다면 CLI 명령에도 같은 `--state`를 준다(로컬 파이프 이름이 상태 폴더로 정해진다) |
+| Agent의 machineId | 컴퓨터 이름을 소문자로 (`--machine`으로 바꾼다) |
 
 상주 실행은 `scripts\manage.ps1 -Action Start|Stop|Status|Restart|InstallLogonTask`를 쓴다. 관리자 권한 도구(regedit, 서비스)를 다루려면 Agent를 관리자로 실행한다(`InstallLogonTask -Highest`).
 
@@ -121,7 +121,16 @@ Claude Code에는 MCP 서버로 붙인다. Controller가 떠 있지 않으면 MC
 claude mcp add desktop-test-driver -- C:\DesktopTestDriver\Controller\Controller.exe --mcp
 ```
 
-도구는 `gui_session`, `gui_window`, `gui_observe`, `gui_act`, `gui_wait`, `gui_capture` 여섯 개다. 함께 쓸 스킬 파일은 [skills/desktop-test-driver/SKILL.md](skills/desktop-test-driver/SKILL.md)에 있다. CLI만 쓰는 에이전트에는 아래처럼 맡긴다.
+도구는 `gui_session`, `gui_window`, `gui_observe`, `gui_act`, `gui_wait`, `gui_capture` 여섯 개다. 도구 설명에 작업별 인자 목록이 들어 있고, 인자를 틀리면 오류 메시지가 기대 인자를 다시 알려 준다.
+
+함께 쓸 스킬은 [skills/desktop-test-driver/SKILL.md](skills/desktop-test-driver/SKILL.md)다. 준비 확인, 요청 구조, 오류별 행동, 정리·보고 절차와 MCP가 없을 때의 CLI 사용법을 담았다. Claude Code가 쓰게 하려면 폴더째 복사한다.
+
+```powershell
+Copy-Item -Recurse skills\desktop-test-driver $env:USERPROFILE\.claude\skills\   # 모든 프로젝트
+Copy-Item -Recurse skills\desktop-test-driver .\.claude\skills\                   # 이 프로젝트만
+```
+
+MCP를 쓰지 않는 에이전트(Codex 등)에는 `Controller.exe --operations`(작업별 인자 목록)와 [사용 규약](docs/agent-usage.md)을 알려 준다. CLI만 쓰는 에이전트에는 아래처럼 맡긴다.
 
 > Controller는 `C:\DesktopTestDriver\Controller\Controller.exe`다. 사용 규약을 읽고 `C:\GuiTest\SimpleMemo.exe`에서 문장 입력·저장·종료·재열기를 시험한다. 다시 읽은 내용이 일치해야 통과다. UIA 조작과 조건 대기를 쓰고, 실패하면 요청 ID와 관측 근거를 남긴다. 결과가 `completionUnknown`인 조작은 반복하지 않는다. 이번 시험에서 연 세션을 닫고, 확인한 결과와 미확인 항목을 구분해 보고한다.
 
@@ -147,7 +156,7 @@ claude mcp add desktop-test-driver -- C:\DesktopTestDriver\Controller\Controller
 | `src/Core/`, `src/Contracts/` | 통신·UIA·입력·정리 구현과 요청·응답 계약 |
 | `fixtures/`, `tests/` | 테스트 앱(SimpleMemo, FormsWorkbench, WpfWorkbench, InputWindow)과 자동 검증 |
 | `schemas/`, `examples/standalone/` | DTO Schema(`--export-schemas`로 생성)와 독립 사용 예제 |
-| `scripts/`, `docs/`, `skills/` | 실행 스크립트, 사용 문서, Claude Code 스킬 |
+| `scripts/`, `docs/`, `skills/` | 실행 스크립트(`manage.ps1`, 패키지 검사, 아이콘 생성 `make-icons.ps1`), 사용 문서, Claude Code 스킬 |
 
 </details>
 

@@ -44,7 +44,16 @@ public static class ArgumentValidator
         "release-input" => "",
         _ => throw new GuiException("UnsupportedOperation")
     };
+    /// <summary>Every argument error names the problem and repeats the expected arguments of the operation.</summary>
     public static void Validate(string operation, JsonElement a)
+    {
+        try { Check(operation, a); }
+        catch (GuiException e) when (e.Code != "UnsupportedOperation" && !e.Message.Contains(" | expected ", StringComparison.Ordinal))
+        { throw new GuiException(e.Code, e.Message + " | expected " + OperationHelp.For(operation), e.Details); }
+        catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException or FormatException)
+        { throw new GuiException("InvalidRequest", (e is KeyNotFoundException ? "A required argument is missing" : "An argument has the wrong JSON type") + " | expected " + OperationHelp.For(operation)); }
+    }
+    private static void Check(string operation, JsonElement a)
     {
         if (a.ValueKind != JsonValueKind.Object) throw new GuiException("InvalidRequest", "ArgumentsMustBeObject");
         GuiProtocol.Fields(a, Allowed(operation));
