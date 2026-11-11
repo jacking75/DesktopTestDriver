@@ -71,17 +71,39 @@ the operation, so read the error message and fix the request. Using the CLI? The
 7. **Close.** `gui_session {action:"close", sessionId}`. It stops launched apps, closes windows opened by `open`, and releases input.
    Report `terminatedProcessIds`, `closedWindowIds` and `retainedWindowIds` when they matter.
 
-**Restart within a session.** Close the window (`gui_window close-window`), then start the app again with
-`gui_window launch {executable, arguments:[…], waitWindow:{titleContains:"…"}}`. The new window has a new windowId and
-new refs.
+**Close and restart within a session.**
 
-**Standard Open/Save file dialogs.** Put the full path into the file name field, then invoke the default button:
+1. `gui_window close-window {windowId}` waits up to 2 s (`waitMilliseconds`, up to 5000) and returns `closed` and
+   `processExited`.
+2. If `closed` is false and `newWindows` lists a window, the app is asking something ("save changes?").
+   `find-element` its button (e.g. `{controlType:"Button", nameStartsWith:"예"}` / `"Yes"`) in that windowId and
+   `invoke` it.
+3. Then confirm with `gui_wait wait-window {title:"…", absent:true}`.
+4. Start the app again with `gui_window launch {executable, arguments:[…], waitWindow:{titleContains:"…"}}`.
+   The request `timeoutMilliseconds` also caps `waitWindow`, so set both (e.g. 15000). The new window has a new windowId
+   and new refs.
 
-- Find the file name field with `find-element {selector:{controlType:"Edit", name:"파일 이름:"}}` or
-  `{automationId:"1148"}`.
-  - In a Save dialog it may be the ComboBox `#FileNameControlHost` (it supports Value).
-  - Labels follow the Windows language (`File name:` in English).
-- `set-value` the full path, then `invoke` the button `#1` (Open/Save). Add `expect` on the app (title or content) to confirm.
+**Confirming window-level results.** `expect` checks elements inside the acting window. For window-level results, use
+`gui_wait wait-window`:
+
+- A title change: `{titleContains:"memo.txt"}`.
+- A dialog that closed: `{title:"다른 이름으로 저장", absent:true}`.
+- An app that exited: `{processName:"App.exe", absent:true}`.
+
+**Standard Open/Save file dialogs.**
+
+1. Invoke the app's Open/Save button with `observeAfter:{includeNewWindows:true, maxDepth:4}`. The dialog comes back in
+   `data.after.newWindows` (its windowId) and inside the app's tree.
+2. File name field:
+   - Save dialog: the ComboBox `#FileNameControlHost` (supports Value).
+   - Open dialog: the Edit `#1148`.
+   - Labels follow the Windows language, so prefer these automationIds.
+3. `set-value` the full path with `expect` value-equals, then `invoke` the button `#1` (Save/Open) with
+   `observeAfter:{includeNewWindows:true}`.
+4. If the file exists, Save asks to replace it. A new window appears in `data.after.newWindows`: invoke its
+   `{controlType:"Button", nameStartsWith:"예"}` (`"Yes"` in English).
+5. Confirm with `gui_wait wait-window {title:"<dialog title>", absent:true}`, then check the app (title or content).
+   Read the saved file yourself to verify its content.
 
 ## 3. Statuses and what to do
 
@@ -155,9 +177,14 @@ Other commands:
 - Argument reference: `Controller.exe --operations [operation]` (it includes the timeout limit). Full reference:
   `docs/agent-usage.md`.
 - If the host was started with `--state DIR`, every CLI call needs the same `--state DIR`.
-- **Non-ASCII text (Korean and so on):** Windows PowerShell 5.1 may re-encode piped text and break it. Write the
-  request to a UTF-8 file and use `--request FILE`, or set `$OutputEncoding = [Text.UTF8Encoding]::new($false)` before
-  piping to `--request-stdin` / `--json-lines`.
+- **Non-ASCII text (Korean and so on):** Windows PowerShell 5.1 may re-encode piped text and break it. `Set-Content`
+  writes ANSI, so do not use it for request files. Write the file like this (a BOM is accepted too) and use `--request FILE`:
+  ```powershell
+  [IO.File]::WriteAllText("$env:TEMP\r.json", ($request | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
+  & $controller --state $state --request "$env:TEMP\r.json" | ConvertFrom-Json
+  ```
+  Or set `$OutputEncoding = [Text.UTF8Encoding]::new($false)` once before piping to `--request-stdin` / `--json-lines`.
+  Responses are UTF-8. If Korean prints garbled, also set `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`.
 - The CLI request uses `controlSessionId` (not `sessionId`). `timeoutMilliseconds`, `requestId` and `note` are fields
   of the request object itself:
 

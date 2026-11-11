@@ -346,12 +346,23 @@ public sealed class GuiRequestHandler
             case "wait-window":
             {
                 var poll = GuiProtocol.OptionalInt(a, "pollMilliseconds") ?? 100; var polls = 0;
+                // absent: true waits until no in-scope window matches (a dialog closed, an app exited).
+                var absent = GuiProtocol.Flag(a, "absent");
                 while (true)
                 {
                     polls++;
-                    var found = WindowQuery.Find(ListWindows(s), a, true);
-                    if (found != null) return new { satisfied = true, window = found, polls };
-                    if (c.RemainingMilliseconds < poll + 50) return new { satisfied = false, polls };
+                    if (absent)
+                    {
+                        var remaining = ListWindows(s).Where(x => WindowQuery.Matches(x, a)).ToArray();
+                        if (remaining.Length == 0) return new { satisfied = true, polls };
+                        if (c.RemainingMilliseconds < poll + 50) return new { satisfied = false, polls, windows = remaining };
+                    }
+                    else
+                    {
+                        var found = WindowQuery.Find(ListWindows(s), a, true);
+                        if (found != null) return new { satisfied = true, window = found, polls };
+                        if (c.RemainingMilliseconds < poll + 50) return new { satisfied = false, polls };
+                    }
                     Task.Delay(poll, c.Cancellation).GetAwaiter().GetResult();
                 }
             }
@@ -369,7 +380,7 @@ public sealed class GuiRequestHandler
                 if (!desktop.Focus(w)) throw new GuiException("FocusDenied");
                 return new { windowId = c.T("windowId"), foreground = true };
             }
-            case "close-window": { var w = Window(c); c.Effect.Started = true; desktop.Close(w); return new { windowId = c.T("windowId"), closeRequested = true }; }
+            case "close-window": return CloseWindow(c);
             case "launch": return Launch(c);
             case "open": return Open(c);
             case "terminate-owned":
@@ -457,6 +468,27 @@ public sealed class GuiRequestHandler
         }
     }
     private static bool Has(JsonElement a, string name) => GuiProtocol.Has(a, name);
+    /// <summary>Asks the window to close and waits (waitMilliseconds, default 2000) until it is gone. When it stays open,
+    /// new windows of the same process are reported: usually a "save changes?" prompt that needs an answer.</summary>
+    private object CloseWindow(Ctx c)
+    {
+        var w = Window(c); var windowId = c.T("windowId");
+        var before = desktop.Windows().Select(x => x.Handle).ToHashSet();
+        c.Effect.Started = true; desktop.Close(w);
+        var wait = Math.Min(GuiProtocol.OptionalInt(c.A, "waitMilliseconds") ?? 2000, Math.Max(0, c.RemainingMilliseconds - 100));
+        var limit = Stopwatch.GetTimestamp() + (long)(wait * (double)Stopwatch.Frequency / 1000);
+        bool closed;
+        while (true)
+        {
+            try { closed = !WindowQuery.Same(w, desktop.Identify(w.Handle)); } catch (GuiException) { closed = true; }
+            if (closed || Stopwatch.GetTimestamp() >= limit) break;
+            Task.Delay(50, c.Cancellation).GetAwaiter().GetResult();
+        }
+        var appeared = desktop.Windows().Where(x => !before.Contains(x.Handle) && x.Process == w.Process).Select(x => Publish(c.Session, x)).ToArray();
+        var processExited = closed && !Processes.Alive(w.Process);
+        return new { windowId, closeRequested = true, closed, processExited, newWindows = appeared.Length > 0 ? appeared : null,
+            hint = !closed && appeared.Length > 0 ? "The window is still open and showed a new window (likely a confirmation prompt). Answer it, then close again." : null };
+    }
     private object Launch(Ctx c)
     {
         var s = c.Session; var a = c.A;

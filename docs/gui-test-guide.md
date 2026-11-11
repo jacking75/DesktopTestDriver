@@ -73,7 +73,13 @@ $window = $open.data.launch.window.windowId      # 예: w1
  "arguments":{"windowId":"w1","elementId":"e4","snapshotToken":"1d93122bc0be","observeAfter":{"includeNewWindows":true,"maxDepth":2}}}
 ```
 
-`data.after.newWindows`에 저장 대화상자가 나온다. 대화상자도 같은 방식으로 `find-element`(`selector: {"controlType":"Edit"}` 등) → `set-value` → `invoke`로 다룬다. 대화상자가 뜨기를 따로 기다릴 때는 `wait-window`를 쓴다.
+`data.after.newWindows`에 저장 대화상자가 나온다. 대화상자도 같은 방식으로 다룬다.
+
+1. 파일 이름 칸을 찾는다. 저장 대화상자는 ComboBox `#FileNameControlHost`, 열기 대화상자는 Edit `#1148`이다.
+2. 그 칸에 전체 경로를 `set-value`한다.
+3. 버튼 `#1`을 `observeAfter:{"includeNewWindows":true}`와 함께 `invoke`한다.
+4. 같은 이름의 파일이 있으면 "바꾸시겠습니까?" 확인창이 `newWindows`에 나온다. 그 창의 "예" 버튼(`{"controlType":"Button","nameStartsWith":"예"}`)을 `invoke`한다.
+5. 대화상자가 닫혔는지는 `wait-window {"title":"다른 이름으로 저장","absent":true}`로 확인한다. 대화상자가 뜨기를 따로 기다릴 때도 `wait-window`를 쓴다.
 
 **완료 표시를 기다린다:**
 

@@ -11,9 +11,11 @@ public static class ArgumentValidator
     private static string Allowed(string operation) => operation switch
     {
         "windows" => "includePopups kind",
-        "find-window" or "wait-window" => "title titleContains titleRegex className kind ownerWindowId processName pollMilliseconds",
+        "find-window" => "title titleContains titleRegex className kind ownerWindowId processName",
+        "wait-window" => "title titleContains titleRegex className kind ownerWindowId processName pollMilliseconds absent",
         "window-state" => "windowId state",
-        "focus" or "close-window" => "windowId",
+        "focus" => "windowId",
+        "close-window" => "windowId waitMilliseconds",
         "launch" => "executable arguments lifetime workingDirectory verb waitWindow",
         "open" => "target arguments verb workingDirectory waitWindow",
         "terminate-owned" => "processIds",
@@ -78,8 +80,10 @@ public static class ArgumentValidator
                 if (!new[] { "title", "titleContains", "titleRegex", "className", "ownerWindowId", "processName", "kind" }.Any(n => GuiProtocol.Has(a, n))) throw new GuiException("InvalidWindowSelector");
                 foreach (var f in new[] { "title", "titleContains", "titleRegex", "className", "ownerWindowId", "processName" }) if (GuiProtocol.Has(a, f)) _ = T(f);
                 if (GuiProtocol.Has(a, "titleRegex")) GuiProtocol.SafeRegex(T("titleRegex"));
+                if (GuiProtocol.Has(a, "absent")) _ = a.GetProperty("absent").GetBoolean();
                 Kind(a); break;
             case "window-state": if (T("state") is not ("minimize" or "maximize" or "restore" or "close")) throw new GuiException("InvalidWindowState"); break;
+            case "close-window": if (GuiProtocol.Has(a, "waitMilliseconds") && a.GetProperty("waitMilliseconds").GetInt32() is < 0 or > 5000) throw new GuiException("InvalidTimeout", "waitMilliseconds must be 0-5000"); break;
             case "launch":
                 if (!Path.IsPathFullyQualified(T("executable"))) throw new GuiException("InvalidExecutable");
                 if (GuiProtocol.Has(a, "workingDirectory") && !Path.IsPathFullyQualified(T("workingDirectory"))) throw new GuiException("InvalidWorkingDirectory");

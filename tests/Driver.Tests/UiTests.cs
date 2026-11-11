@@ -137,6 +137,16 @@ internal static class UiTests
             var full = Data(Ok(await r.Run("inspect", new { windowId = window }))).GetProperty("nodeCount").GetInt32();
             var interactive = Data(Ok(await r.Run("inspect", new { windowId = window, interactiveOnly = true, maxDepth = 6 }))).GetProperty("nodeCount").GetInt32();
             Check(interactive < full, $"interactiveOnly {interactive} < {full}");
+            // close-window with unsaved input: the window stays, the prompt is reported, answering it closes the window.
+            await r.Act("set-value", window, await r.Find(window, new { automationId = "NameBox" }), new { value = "미저장" });
+            var close = Data(Ok(await r.Run("close-window", new { windowId = window, waitMilliseconds = 1500 })));
+            Check(!close.GetProperty("closed").GetBoolean(), "window kept open by the prompt");
+            var prompt = close.GetProperty("newWindows")[0];
+            Equal("닫기 확인", prompt.GetProperty("title").GetString(), "prompt title");
+            var promptId = prompt.GetProperty("windowId").GetString()!;
+            await r.Act("invoke", promptId, await r.Find(promptId, new { controlType = "Button", nameStartsWith = "예" }));
+            var gone = Data(Ok(await r.Run("wait-window", new { title = "WPF 검증 도구", absent = true }, 5000)));
+            Check(gone.GetProperty("satisfied").GetBoolean(), "main window gone after answering the prompt");
         }),
         ("U04 Settings app opens through open, is found and read, and closes with the session", async () =>
         {

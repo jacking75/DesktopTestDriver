@@ -140,10 +140,10 @@ UIA 조작이 실패해도 실제 입력으로 자동 대체하지 않는다. UI
 |---|---|---|
 | `windows` | `kind?`(`main`·`owned`·`popup`), `includePopups?` | `windows[]`: `windowId`(`w1`…, 같은 창이면 같은 ID), `title`, `pid`, `processName`, `bounds`(화면 좌표의 클라이언트 영역), `foreground`, `className`, `kind`, `ownerWindowId`, `minimized`. 기본은 팝업을 빼고, `includePopups: true` 또는 `kind: "popup"`이면 넣는다 |
 | `find-window` | `title`·`titleContains`·`titleRegex`·`className`·`kind`·`processName`·`ownerWindowId` 중 하나 이상 | `window`. 없으면 `WindowNotFound`, 여러 개면 `AmbiguousTarget`과 후보 |
-| `wait-window` | 위와 같음 + `pollMilliseconds`(기본 100) | `satisfied`, `window`, `polls` |
+| `wait-window` | 위와 같음 + `pollMilliseconds`(기본 100), `absent`(true면 일치하는 창이 하나도 없을 때까지 기다린다: 대화상자 닫힘, 앱 종료 확인) | `satisfied`, `window`, `polls`. `absent`가 시간 초과면 남은 창 `windows` |
 | `window-state` | `windowId`, `state`(`minimize`·`maximize`·`restore`·`close`) | UIA WindowPattern, 없으면 Win32 |
 | `focus` | `windowId` | 창을 전경으로 가져온다. 실패하면 `FocusDenied` |
-| `close-window` | `windowId` | 창에 닫기(`WM_CLOSE`)를 요청한다 |
+| `close-window` | `windowId`, `waitMilliseconds`(0–5000, 기본 2000) | 창에 닫기(`WM_CLOSE`)를 요청하고 닫힐 때까지 기다린다. `closed`, `processExited`, `newWindows`. `closed: false`이고 `newWindows`가 있으면 앱이 확인창("저장할까요?")을 띄운 것이다. 그 창의 버튼을 `invoke`한 뒤 `wait-window absent`로 확인한다 |
 | `launch` | `executable`(절대 경로의 실행 파일), `arguments[]`, `lifetime`(`session` 기본·`keep`), `workingDirectory`, `verb`(`open`·`runas`), `waitWindow{timeoutMilliseconds(기본 10000), title, titleContains, className}` | `processId`, `pid`, `imagePath`, `lifetime`, `window`, `waitSatisfied`. `waitWindow`가 없으면 창을 기다리지 않는다 |
 | `open` | `target`(URI·`control.exe /name …`·`.msc`·`.cpl`·문서), `arguments[]`, `verb`, `workingDirectory`, `waitWindow` | `pid`, `processName`(실행된 프로세스를 알 수 있을 때), `window`, `waitSatisfied` |
 | `terminate-owned` | `processIds[]`(`launch` 결과의 `processId`) | 세션이 띄운 프로세스 종료 |

@@ -32,6 +32,8 @@ internal static class Program
         var list = Id(new ListBox { Height = 200, ItemsSource = Enumerable.Range(0, 500).Select(i => "항목 " + i.ToString("D3")).ToArray() }, "Items");
         VirtualizingPanel.SetIsVirtualizing(list, true); VirtualizingPanel.SetVirtualizationMode(list, VirtualizationMode.Recycling);
         foreach (var e in new UIElement[] { choice, apply, slow, tri, volume, name, status, list }) panel.Children.Add(e);
+        // Unsaved input asks before closing, like a real editor ("save changes?").
+        window.Closing += (_, e) => { if (name.Text.Length > 0 && MessageBox.Show(window, "입력한 내용을 버리고 닫을까요?", "닫기 확인", MessageBoxButton.YesNo) != MessageBoxResult.Yes) e.Cancel = true; };
         root.Children.Add(panel); window.Content = root; app.Run(window);
     }
 }

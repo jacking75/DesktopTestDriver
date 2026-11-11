@@ -166,6 +166,17 @@ internal static class HandlerTests
             r = await c.Run("find-element", new { windowId = c.Window, selector = new { automationId = "Nope" }, errorContext = false });
             Check(r.Error!.Data == null, "context disabled");
         }),
+        ("H16 close-window reports whether the window actually closed; wait-window absent waits for it to go", async () =>
+        {
+            var c = new Context(); await c.OpenWindow();
+            var missing = Ok(await c.Run("wait-window", new { title = "다른 창", absent = true }));
+            Check(Data(missing).GetProperty("satisfied").GetBoolean(), "absent window satisfied at once");
+            var present = Ok(await c.Run("wait-window", new { title = "간단 메모", absent = true }, timeout: 300));
+            Check(!Data(present).GetProperty("satisfied").GetBoolean() && Data(present).GetProperty("windows").GetArrayLength() == 1, "present window keeps absent unsatisfied");
+            var closed = Ok(await c.Run("close-window", new { windowId = c.Window }));
+            Check(Data(closed).GetProperty("closed").GetBoolean(), "closed");
+            Equal("InvalidTimeout", (await c.Run("close-window", new { windowId = c.Window, waitMilliseconds = 6000 })).Error?.Code, "wait range");
+        }),
         ("H15 capture is journaled; stale references are refused with StaleElement", async () =>
         {
             var c = new Context(); await c.OpenWindow();
