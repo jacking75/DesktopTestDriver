@@ -627,16 +627,31 @@ public sealed class GuiRequestHandler
             ["target"] = JsonSerializer.SerializeToNode(Export(c.Session, windowId, locator.TreeView, result.Target!), GuiProtocol.Json),
             ["dispatchKind"] = result.DispatchKind
         };
+        if (result.Data is { } extra && extra.TryGetProperty("pendingModal", out var pending) && pending.GetBoolean())
+        {
+            // The action is waiting on a modal window it opened. The session stays usable: answer the window.
+            var modal = new List<PublicWindow>();
+            foreach (var h in extra.GetProperty("modalWindowHandles").EnumerateArray().Select(x => x.GetInt64()))
+            {
+                // In scope for this session, but never closed by the session itself.
+                try { modal.Add(Publish(c.Session, desktop.Identify(h))); c.Session.OpenedWindows.TryAdd(h, "existing"); } catch (GuiException) { }
+            }
+            data["dispatchState"] = "pending-modal";
+            data["modalWindows"] = JsonSerializer.SerializeToNode(modal, GuiProtocol.Json);
+            data["hint"] = "The action opened a modal window and has not returned yet. Answer that window (find its button and invoke it, or close-window); the action finishes when it closes.";
+            After(c, w, data, before, skipExpect: true);
+            return data;
+        }
         After(c, w, data, before);
         return data;
     }
     private HashSet<long>? AfterSnapshot(Ctx c) =>
         Has(c.A, "observeAfter") && GuiProtocol.Flag(c.A.GetProperty("observeAfter"), "includeNewWindows") ? desktop.Windows().Select(w => w.Handle).ToHashSet() : null;
     /// <summary>expect and observeAfter: their failures never change the outcome of the dispatched operation.</summary>
-    private void After(Ctx c, DesktopWindow w, JsonObject data, HashSet<long>? before)
+    private void After(Ctx c, DesktopWindow w, JsonObject data, HashSet<long>? before, bool skipExpect = false)
     {
         var a = c.A;
-        if (Has(a, "expect"))
+        if (Has(a, "expect") && !skipExpect)
         {
             try
             {

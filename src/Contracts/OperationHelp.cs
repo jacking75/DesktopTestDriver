@@ -6,7 +6,7 @@ namespace DesktopTestDriver;
 public static class OperationHelp
 {
     private const string Element = "windowId, elementId, snapshotToken";
-    private const string After = " [expect?{selector,condition,expected?,timeoutMilliseconds?}, observeAfter?{maxDepth?,includeNewWindows?,settleMilliseconds?,rootElementId?,rootSnapshotToken?}] — result: target = the element BEFORE the action (use expect to read the outcome), dispatchKind";
+    private const string After = " [expect?{selector,condition,expected?,timeoutMilliseconds?}, observeAfter?{maxDepth?,includeNewWindows?,settleMilliseconds?,rootElementId?,rootSnapshotToken?}] — result: target = the element BEFORE the action (use expect to read the outcome), dispatchKind; if the action opened a modal window and is waiting on it: dispatchState=pending-modal, modalWindows (answer that window)";
     private const string Selector = "selector{automationId|automationIdRegex|name|nameContains|nameStartsWith|nameRegex|controlType|className|frameworkId|ancestorAutomationId|parent{…}|index}";
     private const string WindowFilter = "title?|titleContains?|titleRegex?|className?|kind?(main|owned|popup)|processName?|ownerWindowId? (at least one)";
     public static readonly IReadOnlyDictionary<string, string> Arguments = new Dictionary<string, string>(StringComparer.Ordinal)

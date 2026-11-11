@@ -118,6 +118,8 @@ Agent는 로그인된 사용자의 바탕화면(콘솔 또는 연결된 RDP)에�
 
 읽기 요청의 시간 초과, 디스패치 전 거부는 세션 상태를 바꾸지 않는다. `release-input` 뒤에는 미확정 요청과 일시 중지가 없으면 `active`로 돌아간다.
 
+`blocked` 세션에서는 변경 요청만 `SessionBlocked`로 거부된다. 읽기 작업(`windows`, `find-window`, `wait-window`, `inspect`, `find-element`, `capabilities`, `wait-condition`, `read-text`, `capture` 등)으로 실제 결과를 확인한 뒤 reconcile한다. reconcile은 판단을 기록하고 차단을 푸는 것일 뿐이다. 무언가를 취소하거나 다시 실행하지 않는다. 앱 안에서 아직 진행 중인 조작은 스스로 끝난다.
+
 **입력 세션의 lease.** `--input` 세션은 열 때, 재개할 때, `release-input`으로 `active`가 될 때 30초 lease를 받고, 변경 요청이 성공할 때마다 `지금 + 30초`로 연장된다. 상한은 받은 시점부터 15분이다(`leaseExpiresAt`, `leaseHardLimitAt`). 30초 동안 성공한 조작이 없거나, 상한에 닿거나, 사람의 키·마우스 입력이 감지되면 회수되고 세션이 `blocked`가 된다. `--session-resume`으로 새 lease를 받는다. lease는 실제 입력 작업에만 필요하다. 같은 세션의 UIA 조작과 읽기는 lease와 무관하다.
 
 **세션 수명.** 세션의 참조(`e…`)는 세션마다 최근 8,192개까지 유지된다. 오래된 참조는 `StaleElement`가 된다. Agent가 재시작되면 이전 세션은 정리되어 닫힌다.
@@ -220,6 +222,14 @@ UIA 조작이 실패해도 실제 입력으로 자동 대체하지 않는다. UI
 UIA 조작은 `windowId`, `elementId`, `snapshotToken`과 작업별 인자를 받는다: `set-value`(`value`, `expectedValueHash`=현재 값 UTF-8의 SHA-256), `set-range-value`(`value`), `set-toggle`(`desiredState`: `on`·`off`·`indeterminate`, 3상태 컨트롤은 원하는 상태가 될 때까지 최대 3회 토글), `set-expanded`(`expanded`), `scroll-container`(`horizontal`, `vertical`: 0–100, 바꾸지 않으면 -1).
 
 Agent는 한 번의 작업자 왕복에서 요소를 다시 확인하고(사라짐·변경 → `StaleElement`), 활성·패턴·읽기 전용·기대 값을 확인한 뒤 디스패치한다(`ElementDisabled`, `PatternNotSupported`, `ValueReadOnly`, `ValueConflict`, `InvalidRangeValue`). 이 단계의 거부는 모두 `rejected`이며 세션에 영향이 없다. 결과는 `target`(디스패치 직전의 노드)과 `dispatchKind`(어떤 경로로 패턴을 호출했는지)다. `clipboard-set`은 `text`만 받는다.
+
+**모달 창을 여는 조작.** Win32 대화상자 버튼이나 많은 WinForms 버튼은 자신이 연 모달 창(확인창, 대화상자)이 닫힐 때까지 UIA 호출이 돌아오지 않는다. Agent는 패턴 호출을 별도 스레드에서 실행하고, 400ms가 지나도 끝나지 않았는데 대상 프로세스에 새 창이 생겼으면 기다리지 않고 응답한다.
+- 응답은 `completed`이고 `data.dispatchState: "pending-modal"`과 `data.modalWindows`(바로 쓸 수 있는 windowId)가 붙는다.
+- 세션은 `active`로 남는다.
+- 그 창의 버튼을 `invoke`하거나 `close-window`로 답하면 원래 조작이 스스로 끝난다.
+- 이 경우 `expect`는 건너뛰고 `observeAfter`는 실행한다.
+
+이전에는 이런 조작이 제한 시간을 넘겨 `completionUnknown`이 되고 세션이 막혔다.
 
 UIA 조작과 `click`·`type-text`·`key`·`chord`는 선택 인자 두 개를 받는다. 실패해도 조작 결과는 바뀌지 않고 `data.afterError`에 코드만 남는다.
 

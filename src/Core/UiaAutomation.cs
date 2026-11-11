@@ -9,7 +9,7 @@ namespace DesktopTestDriver;
 public static class UiaAutomation
 {
     /// <summary>Raised right before a provider method that can change the application is called.</summary>
-    public static bool DispatchStarted;
+    public static volatile bool DispatchStarted;
     public const int MaxNodes = 2048, MaxName = 1024, MaxValue = 65536;
     private static readonly Dictionary<string, AutomationElement> elements = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, (AutomationElement Element, ObservationNode Node, string ContainerToken)> virtualItems = new(StringComparer.Ordinal);
@@ -569,7 +569,8 @@ public static class UiaAutomation
         foreach (var required in descriptor.RequiredPatterns)
             if (!node.Patterns.Contains(required)) throw new GuiException("PatternNotSupported", "PatternNotSupported: " + required) { NoEffect = true };
         var handle = c.Window.Handle; var id = unrealized ? [] : Ints(node.ElementId);
-        bool native;
+        bool native = false;
+        var modal = Guarded(ctx, () => {
         switch (c.Operation)
         {
             case "set-value":
@@ -631,6 +632,35 @@ public static class UiaAutomation
                 break;
             default: throw new GuiException("UnsupportedOperation") { NoEffect = true };
         }
+        });
+        if (modal != null)
+            return new UiaResult([], node) { DispatchKind = "pending-modal", Data = JsonSerializer.SerializeToElement(new { pendingModal = true, modalWindowHandles = modal }) };
         return new UiaResult([], node) { DispatchKind = native ? NativeAutomation.LastDispatchKind : "managed-pattern" };
+    }
+    /// <summary>Some providers run the action synchronously (WinForms buttons, Win32 dialog buttons): a pattern call that
+    /// opens a modal window does not return until that window closes. The call runs on its own thread; when it is still
+    /// running after 400 ms and a new window of the target process has appeared, the handles are returned and the call
+    /// is left to finish once the modal window is answered. Null means the call finished normally.</summary>
+    private static long[]? Guarded(Context ctx, Action act)
+    {
+        var pid = ctx.Command.Window.Process.Pid; var before = TopWindows(pid);
+        Exception? error = null;
+        var thread = new Thread(() => { try { act(); } catch (Exception e) { error = e; } }) { IsBackground = true, Name = "uia-dispatch" };
+        thread.SetApartmentState(ApartmentState.MTA); thread.Start();
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        while (!thread.Join(100))
+        {
+            if (System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds < 400 || !DispatchStarted) continue;
+            var fresh = TopWindows(pid).Where(h => !before.Contains(h)).ToArray();
+            if (fresh.Length > 0) return fresh;
+        }
+        if (error != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+        return null;
+    }
+    private static HashSet<long> TopWindows(int pid)
+    {
+        var found = new HashSet<long>();
+        Native.EnumWindows((h, _) => { Native.GetWindowThreadProcessId(h, out var p); if (p == pid && Native.IsWindowVisible(h)) found.Add(h.ToInt64()); return true; }, IntPtr.Zero);
+        return found;
     }
 }

@@ -98,12 +98,24 @@ the operation, so read the error message and fix the request. Using the CLI? The
    - Save dialog: the ComboBox `#FileNameControlHost` (supports Value).
    - Open dialog: the Edit `#1148`.
    - Labels follow the Windows language, so prefer these automationIds.
+   - The dialog opens in the folder it used last, so always set the full path.
 3. `set-value` the full path with `expect` value-equals, then `invoke` the button `#1` (Save/Open) with
    `observeAfter:{includeNewWindows:true}`.
-4. If the file exists, Save asks to replace it. A new window appears in `data.after.newWindows`: invoke its
-   `{controlType:"Button", nameStartsWith:"예"}` (`"Yes"` in English).
+4. If the file exists, Save asks to replace it. The invoke then returns `completed` with
+   `data.dispatchState:"pending-modal"` and the prompt in `data.modalWindows` (see below). Invoke the prompt's Yes
+   button: automationId `CommandButton_6`, or `{controlType:"Button", nameStartsWith:"예"}` (`"Yes"` in English).
 5. Confirm with `gui_wait wait-window {title:"<dialog title>", absent:true}`, then check the app (title or content).
    Read the saved file yourself to verify its content.
+
+**An action that opens a modal window.** Some buttons (Win32 dialog buttons, many WinForms buttons) do not return
+until the modal window they open is closed. The driver detects this:
+
+- The response is `completed` with `data.dispatchState:"pending-modal"` and `data.modalWindows` (windowIds you can
+  use right away).
+- The session stays `active`.
+- Answer the modal window: `find-element` + `invoke` its button, or `close-window`. The original action then finishes
+  on its own.
+- `expect` is skipped in this case. Check the result after answering.
 
 ## 3. Statuses and what to do
 
@@ -113,6 +125,13 @@ the operation, so read the error message and fix the request. Using the CLI? The
 | `rejected` | Refused before anything happened | Fix the request using `error.code`/`error.message`; safe to retry |
 | `failed` | Real input was partly sent | Observe again before deciding |
 | `completionUnknown` | A dispatch started; its end is unknown. The session becomes `blocked` | **Never repeat the action.** Observe the UI, then `gui_session {action:"reconcile", sessionId, requestId, resolution:"effect-confirmed"|"no-effect-confirmed", resume:true}` |
+
+**While a session is `blocked`, reads still work and mutations are refused (`SessionBlocked`).**
+- Reads: `windows`, `find-window`, `wait-window`, `inspect`, `find-element`, `capabilities`, `wait-condition`,
+  `read-text`, `capture`.
+- Use them to see what really happened, then reconcile.
+- Reconciling only records your judgement and unblocks the session. It does not cancel or repeat anything: an action
+  still running in the app finishes on its own.
 
 | error.code | Do |
 |---|---|
@@ -192,3 +211,27 @@ Other commands:
 {"requestId":"r1","controlSessionId":"control-…","operation":"invoke","timeoutMilliseconds":5000,
  "arguments":{"windowId":"w1","elementId":"e4","snapshotToken":"1d93122bc0be"}}
 ```
+
+- **Names in this skill → CLI.** Every `gui_window`/`gui_observe`/`gui_act`/`gui_wait`/`gui_capture` operation name is
+  the CLI `operation` as is: `gui_window windows` → `"operation":"windows"`, `gui_wait wait-window` →
+  `"operation":"wait-window"`, `gui_capture` → `"operation":"capture"`. `gui_session` actions are commands:
+
+| gui_session action | CLI |
+|---|---|
+| `agents` | `--status` |
+| `doctor` | `--doctor` |
+| `open` | `--session-open [--launch EXE --arg A …] [--input] [--observe] [--target-pid N] [--target-window-title-contains T] [--target-any]` |
+| `status` | `--session-status ID` |
+| `close` | `--session-close ID` |
+| `resume` | `--session-resume ID` |
+| `pause` | `--session-pause ID` |
+| `reconcile` | `--session-reconcile ID --request-id R --resolution effect-confirmed --resume` |
+| `request-status` | `--request-status ID R` |
+
+- **Exit codes:** 0 `completed`, 2 `completionUnknown`, 1 everything else (`rejected`, `failed`, command errors).
+  The JSON response is always printed, so read `status` rather than relying on the exit code alone.
+- `--session-close` reports `terminatedProcessIds`. These are the applications the session launched that are no longer
+  running, including ones that had already exited (e.g. after `close-window`). `retainedProcessIds` were left running
+  (`lifetime:"keep"`).
+- `launch` + `waitWindow` matches only windows of the launched process (and its child processes). `open` + `waitWindow`
+  matches new windows of any process, plus an already open window that fits the title or class conditions.

@@ -148,6 +148,27 @@ internal static class UiTests
             var gone = Data(Ok(await r.Run("wait-window", new { title = "WPF 검증 도구", absent = true }, 5000)));
             Check(gone.GetProperty("satisfied").GetBoolean(), "main window gone after answering the prompt");
         }),
+        ("U07 a dialog button that opens a modal prompt (Save over an existing file) returns pending-modal, not a timeout", async () =>
+        {
+            await using var r = new Real(); await r.Ready();
+            var folder = Root("ui-tests"); Directory.CreateDirectory(folder);
+            var path = Path.Combine(folder, "existing.txt"); File.WriteAllText(path, "old");
+            var window = await r.Launch("FormsWorkbench", "--quiet");
+            await r.Act("set-value", window, await r.Find(window, new { automationId = "Editor" }), new { value = "new content" });
+            var opened = await r.Act("invoke", window, await r.Find(window, new { automationId = "Save" }), new { observeAfter = new { includeNewWindows = true, maxDepth = 1, settleMilliseconds = 800 } });
+            var newWindows = opened.GetProperty("after").GetProperty("newWindows");
+            var dialog = newWindows.GetArrayLength() > 0 ? newWindows[0] : Data(Ok(await r.Run("wait-window", new { className = "#32770" }, 5000))).GetProperty("window");
+            var dialogId = dialog.GetProperty("windowId").GetString()!; var dialogTitle = dialog.GetProperty("title").GetString()!;
+            await r.Act("set-value", dialogId, await r.Find(dialogId, new { automationId = "FileNameControlHost" }), new { value = path });
+            var save = await r.Act("invoke", dialogId, await r.Find(dialogId, new { automationId = "1", controlType = "Button" }));
+            Equal("pending-modal", save.GetProperty("dispatchState").GetString(), "dispatch state");
+            var prompt = save.GetProperty("modalWindows")[0].GetProperty("windowId").GetString()!;
+            Equal("active", Data(Ok(await r.Call(new("session-status", SessionId: r.Session)))).GetProperty("state").GetString(), "session stays active");
+            await r.Act("invoke", prompt, await r.Find(prompt, new { automationId = "CommandButton_6" }));
+            Check(Data(Ok(await r.Run("wait-window", new { title = dialogTitle, absent = true }, 5000))).GetProperty("satisfied").GetBoolean(), "save dialog closed");
+            for (int i = 0; i < 20 && File.ReadAllText(path) != "new content"; i++) await Task.Delay(100);
+            Equal("new content", File.ReadAllText(path), "file replaced");
+        }),
         ("U04 Settings app opens through open, is found and read, and closes with the session", async () =>
         {
             await using var r = new Real(); await r.Ready();

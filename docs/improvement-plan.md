@@ -784,9 +784,9 @@ P3에 따라 호환을 두지 않고 Core를 새 구조로 다시 썼다. 버전
 
 | 묶음 | 결과 | 내용 |
 |---|---|---|
-| 계약·처리 테스트 | 28개 통과 | 가짜 데스크톱. 3.1~3.6, 2.1, 4.3, 5.2, 5.6, 7.1, 8.2, 8.3, 9.6, 9.7, 작업별 인자 참조와 오류 메시지 |
+| 계약·처리 테스트 | 29개 통과 | 가짜 데스크톱. 3.1~3.6, 2.1, 4.3, 5.2, 5.6, 7.1, 8.2, 8.3, 9.6, 9.7, 작업별 인자 참조와 오류 메시지 |
 | TCP 테스트 | 8개 통과 | 같은 프로세스의 Controller·Agent. 3.1, 3.2, 4.1, 4.2, P9, 10.5, 미확정 차단 |
-| 실제 UI 테스트 | 6개 통과 | SimpleMemo, FormsWorkbench, WpfWorkbench(새 픽스처), 설정 앱(`ms-settings:about`), 제어판(`control.exe`), `runas` 거부 |
+| 실제 UI 테스트 | 7개 통과 | SimpleMemo, FormsWorkbench, WpfWorkbench(새 픽스처, 닫기 전 확인창 포함), 설정 앱(`ms-settings:about`), 제어판(`control.exe`), `runas` 거부, 모달 확인창을 여는 대화상자 버튼(pending-modal) |
 | 패키지 검사 | 통과 | 배포본에서 Start → `--session-open --launch` → inspect → SDK 예제 → 닫기 → 재시작 → 정지 |
 | 종단 간 수동 확인 | 통과 | 실제 `Controller.exe`·`Agent.exe`(watchdog 포함)로 CLI, `--doctor`, MCP(`initialize`, `tools/list`, 세션·관측·이미지 캡처·닫기) |
 
