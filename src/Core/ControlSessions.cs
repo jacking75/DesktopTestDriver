@@ -24,8 +24,9 @@ public sealed record SessionInfo(string ControlSessionId, string MachineId, stri
     public string[] PendingUnknownRequestIds { get; init; } = [];
     public string? StopReason { get; init; }
     public string? PauseReason { get; init; }
-    public bool? InputReleased { get; init; } = true;
-    public bool? ApplicationsStopped { get; init; } = true;
+    /// <summary>Cleanup results; null until the session has been released or closed.</summary>
+    public bool? InputReleased { get; init; }
+    public bool? ApplicationsStopped { get; init; }
     public DateTimeOffset? LeaseExpiresAt { get; init; }
     public DateTimeOffset? LeaseHardLimitAt { get; init; }
     public string[] TerminatedProcessIds { get; init; } = [];

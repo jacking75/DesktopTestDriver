@@ -486,6 +486,8 @@ public sealed class GuiRequestHandler
         }
         var appeared = desktop.Windows().Where(x => !before.Contains(x.Handle) && x.Process == w.Process).Select(x => Publish(c.Session, x)).ToArray();
         var processExited = closed && !Processes.Alive(w.Process);
+        if (closed)
+            lock (c.Session.Mutation) { c.Session.Info = c.Session.Info with { ClosedWindowIds = c.Session.Info.ClosedWindowIds.Append(windowId).Distinct().ToArray() }; sessions.Save(c.Session); }
         return new { windowId, closeRequested = true, closed, processExited, newWindows = appeared.Length > 0 ? appeared : null,
             hint = !closed && appeared.Length > 0 ? "The window is still open and showed a new window (likely a confirmation prompt). Answer it, then close again." : null };
     }
@@ -668,7 +670,8 @@ public sealed class GuiRequestHandler
                 var settle = GuiProtocol.OptionalInt(o, "settleMilliseconds") ?? 100; if (settle > 0) Task.Delay(settle, c.Cancellation).GetAwaiter().GetResult();
                 var current = desktop.Identify(w.Handle);
                 var root = Has(o, "rootElementId") ? Locate(c, "rootElementId", "rootSnapshotToken", o) : null;
-                var arguments = JsonSerializer.SerializeToElement(new { maxDepth = GuiProtocol.OptionalInt(o, "maxDepth") ?? 6 });
+                // Interactive elements only by default: dialogs carry many empty panes and toolbars.
+                var arguments = JsonSerializer.SerializeToElement(new { maxDepth = GuiProtocol.OptionalInt(o, "maxDepth") ?? 6, interactiveOnly = GuiProtocol.Flag(o, "interactiveOnly", true) });
                 var result = Uia(c, new UiaCommand(current, "inspect", arguments) { SearchRoot = root, TreeView = root?.TreeView ?? "control" });
                 data["after"] = new JsonObject { ["tree"] = CompactTree.Format(ExportAll(c.Session, windowId, root?.TreeView ?? "control", result.Nodes), false) };
                 if (before != null)

@@ -238,7 +238,8 @@ public static class ArgumentValidator
     }
     private static void ObserveAfter(JsonElement o)
     {
-        GuiProtocol.Fields(o, "rootElementId rootSnapshotToken settleMilliseconds maxDepth includeNewWindows");
+        GuiProtocol.Fields(o, "rootElementId rootSnapshotToken settleMilliseconds maxDepth includeNewWindows interactiveOnly");
+        if (GuiProtocol.Has(o, "interactiveOnly")) _ = o.GetProperty("interactiveOnly").GetBoolean();
         Pair(o, "rootElementId", "rootSnapshotToken");
         if (GuiProtocol.Has(o, "settleMilliseconds") && o.GetProperty("settleMilliseconds").GetInt32() is < 0 or > 1000) throw new GuiException("InvalidSettle");
         if (GuiProtocol.Has(o, "maxDepth") && o.GetProperty("maxDepth").GetInt32() is < 1 or > 16) throw new GuiException("InvalidDepth");

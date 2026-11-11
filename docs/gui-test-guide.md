@@ -78,7 +78,7 @@ $window = $open.data.launch.window.windowId      # 예: w1
 1. 파일 이름 칸을 찾는다. 저장 대화상자는 ComboBox `#FileNameControlHost`, 열기 대화상자는 Edit `#1148`이다.
 2. 그 칸에 전체 경로를 `set-value`한다.
 3. 버튼 `#1`을 `observeAfter:{"includeNewWindows":true}`와 함께 `invoke`한다.
-4. 같은 이름의 파일이 있으면 "바꾸시겠습니까?" 확인창이 `newWindows`에 나온다. 그 창의 "예" 버튼(`{"controlType":"Button","nameStartsWith":"예"}`)을 `invoke`한다.
+4. 같은 이름의 파일이 있으면 "바꾸시겠습니까?" 확인창이 뜬다. 저장 버튼 `invoke`는 이 창이 닫힐 때까지 끝나지 않으므로 `data.dispatchState: "pending-modal"`과 `data.modalWindows`로 돌아온다. 그 창의 "예" 버튼을 이름(`{"controlType":"Button","nameStartsWith":"예"}`)으로 찾아 `invoke`한다. automationId는 고전 메시지 상자면 `6`, 작업 대화상자면 `CommandButton_6`으로 형식마다 다르다. 시험 경로를 일정하게 하려면 시험 전에 파일을 지워 둔다.
 5. 대화상자가 닫혔는지는 `wait-window {"title":"다른 이름으로 저장","absent":true}`로 확인한다. 대화상자가 뜨기를 따로 기다릴 때도 `wait-window`를 쓴다.
 
 **완료 표시를 기다린다:**

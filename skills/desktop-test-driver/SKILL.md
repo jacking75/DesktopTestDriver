@@ -62,14 +62,23 @@ the operation, so read the error message and fix the request. Using the CLI? The
      or a new find.
    - Add `observeAfter:{includeNewWindows:true, maxDepth:3}` when the action may open a dialog. New windows come back
      in `data.after.newWindows`.
-   - A modal dialog appears both as its own window (`w2`) and inside its owner's tree (`data.after.tree`). Refs from
-     either work with the windowId they came from.
+     - `observeAfter` lists interactive elements only by default. Pass `interactiveOnly:false` for every node.
+     - Dialogs are large, so keep `maxDepth` at 3–4.
+   - A modal dialog appears both as its own window (`w2`) and inside its owner's tree (`data.after.tree`). A ref works
+     only with the windowId of the tree it came from:
+     - Refs from `data.after.tree` go with the acting window (`w1`).
+     - To use `w2`, read it first: `find-element` or `inspect` with `windowId:"w2"`.
 5. **Wait.** `gui_wait wait-condition` (up to 30 s; poll is 100 ms).
    - Use `anyOf:[…]` to wait for success or an error dialog at once; `matchedIndex` tells which one matched.
    - A timeout is `completed` with `satisfied:false`: that is a result, not a tool failure.
 6. **Judge** the product outcome: re-read values, reopen files, check other systems. `completed` only means the request ran.
 7. **Close.** `gui_session {action:"close", sessionId}`. It stops launched apps, closes windows opened by `open`, and releases input.
-   Report `terminatedProcessIds`, `closedWindowIds` and `retainedWindowIds` when they matter.
+   - Report `terminatedProcessIds`, `closedWindowIds` (including windows you closed with `close-window`) and
+     `retainedWindowIds` when they matter.
+   - `inputReleased`/`applicationsStopped` are cleanup results and stay absent while the session is open.
+
+**Make the path deterministic.** Before the test, decide what to do with files the test writes. Delete them first
+(or use a new file name) so the app does not take a different path, such as a "replace?" prompt, only on some runs.
 
 **Close and restart within a session.**
 
@@ -92,7 +101,7 @@ the operation, so read the error message and fix the request. Using the CLI? The
 
 **Standard Open/Save file dialogs.**
 
-1. Invoke the app's Open/Save button with `observeAfter:{includeNewWindows:true, maxDepth:4}`. The dialog comes back in
+1. Invoke the app's Open/Save button with `observeAfter:{includeNewWindows:true, maxDepth:3}`. The dialog comes back in
    `data.after.newWindows` (its windowId) and inside the app's tree.
 2. File name field:
    - Save dialog: the ComboBox `#FileNameControlHost` (supports Value).
@@ -103,7 +112,9 @@ the operation, so read the error message and fix the request. Using the CLI? The
    `observeAfter:{includeNewWindows:true}`.
 4. If the file exists, Save asks to replace it. The invoke then returns `completed` with
    `data.dispatchState:"pending-modal"` and the prompt in `data.modalWindows` (see below). Invoke the prompt's Yes
-   button: automationId `CommandButton_6`, or `{controlType:"Button", nameStartsWith:"예"}` (`"Yes"` in English).
+   button.
+   - Find it by name in the prompt's windowId: `{controlType:"Button", nameStartsWith:"예"}` (`"Yes"` in English).
+   - Its automationId depends on the dialog type: `6` in a classic message box, `CommandButton_6` in a task dialog.
 5. Confirm with `gui_wait wait-window {title:"<dialog title>", absent:true}`, then check the app (title or content).
    Read the saved file yourself to verify its content.
 
@@ -182,8 +193,19 @@ unknown action. Do not report a step as passed only because its status was `comp
 
 Run one controller host: `Controller.exe --serve`. Then send requests in either of two ways:
 
-- **Many requests (fastest):** keep `Controller.exe --json-lines` running and write one request JSON per line.
-- **One request:** `Controller.exe --request-stdin` per request.
+- **From PowerShell (recommended):** use the helper `scripts\Invoke-DtdRequest.ps1`. It ships next to Controller.exe
+  in the package, or is in the repository's `scripts\`. It writes the request as UTF-8 (Korean is safe), sends it, and
+  returns the parsed response:
+  ```powershell
+  $dtd = 'C:\…\Controller\scripts\Invoke-DtdRequest.ps1'      # -Controller C:\…\Controller.exe when run from the repository
+  $r = & $dtd -State $state -Session $s -Operation set-value -Arguments @{windowId='w1'; elementId='e5'; snapshotToken='b2d40c2611bd'; value='에이전트 시험'; expect=@{selector=@{automationId='MemoText'}; condition='value-equals'; expected='에이전트 시험'}}
+  $r.status; $r.data.expect.satisfied
+  ```
+  It also takes `-TimeoutMilliseconds`, `-RequestId` and `-Note`.
+- **A program that keeps a process open:** start `Controller.exe --json-lines` once, write one request JSON per line
+  to its stdin (UTF-8), and read one response line each. This is the fastest path, but it pays off only when your
+  process stays alive between requests. Each separate shell command would start a new one.
+- **One raw request:** `Controller.exe --request FILE` or `--request-stdin`.
 
 Other commands:
 

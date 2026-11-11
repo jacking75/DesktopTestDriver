@@ -12,6 +12,7 @@
 | `Controller.exe --json-lines` | 프로세스 하나를 유지하며 stdin 한 줄에 명령 하나, stdout 한 줄에 응답 하나. 요청 객체(`operation`이 있는 줄)를 그대로 보내도 된다 |
 | `Controller.exe --request FILE`, `--request-stdin` | 일회성 호출. 호출마다 프로세스를 띄우므로 반복 호출에는 위 두 가지를 쓴다 |
 | `Controller.exe --operations [작업]` | 작업별 인자 목록. MCP 도구 설명, 인자 오류 메시지와 같은 내용이다 |
+| `scripts\Invoke-DtdRequest.ps1` | PowerShell 도우미. `-Session -Operation -Arguments @{…}`를 받아 요청을 BOM 없는 UTF-8 파일로 써서 보내고, 파싱한 응답을 돌려준다. 한글이 깨지지 않는다 |
 | C# `DesktopClient` | 모델 없이 반복 실행하는 테스트 코드 |
 
 모든 입구는 `Controller.exe --serve`(호스트)에 이름 있는 파이프로 붙는다. 호스트는 Agent와 평문 TCP로 연결된다.
@@ -120,6 +121,8 @@ Agent는 로그인된 사용자의 바탕화면(콘솔 또는 연결된 RDP)에�
 
 `blocked` 세션에서는 변경 요청만 `SessionBlocked`로 거부된다. 읽기 작업(`windows`, `find-window`, `wait-window`, `inspect`, `find-element`, `capabilities`, `wait-condition`, `read-text`, `capture` 등)으로 실제 결과를 확인한 뒤 reconcile한다. reconcile은 판단을 기록하고 차단을 푸는 것일 뿐이다. 무언가를 취소하거나 다시 실행하지 않는다. 앱 안에서 아직 진행 중인 조작은 스스로 끝난다.
 
+세션 정보의 `inputReleased`·`applicationsStopped`는 정리 결과다. 세션이 열려 있는 동안에는 없고, 해제·닫기 뒤에 채워진다. `terminatedProcessIds`는 세션이 띄운 앱 중 이제 실행 중이 아닌 것(먼저 스스로 끝난 앱 포함), `closedWindowIds`는 `close-window`로 닫았거나 세션을 닫을 때 닫은 창이다.
+
 **입력 세션의 lease.** `--input` 세션은 열 때, 재개할 때, `release-input`으로 `active`가 될 때 30초 lease를 받고, 변경 요청이 성공할 때마다 `지금 + 30초`로 연장된다. 상한은 받은 시점부터 15분이다(`leaseExpiresAt`, `leaseHardLimitAt`). 30초 동안 성공한 조작이 없거나, 상한에 닿거나, 사람의 키·마우스 입력이 감지되면 회수되고 세션이 `blocked`가 된다. `--session-resume`으로 새 lease를 받는다. lease는 실제 입력 작업에만 필요하다. 같은 세션의 UIA 조작과 읽기는 lease와 무관하다.
 
 **세션 수명.** 세션의 참조(`e…`)는 세션마다 최근 8,192개까지 유지된다. 오래된 참조는 `StaleElement`가 된다. Agent가 재시작되면 이전 세션은 정리되어 닫힌다.
@@ -145,7 +148,7 @@ UIA 조작이 실패해도 실제 입력으로 자동 대체하지 않는다. UI
 | `wait-window` | 위와 같음 + `pollMilliseconds`(기본 100), `absent`(true면 일치하는 창이 하나도 없을 때까지 기다린다: 대화상자 닫힘, 앱 종료 확인) | `satisfied`, `window`, `polls`. `absent`가 시간 초과면 남은 창 `windows` |
 | `window-state` | `windowId`, `state`(`minimize`·`maximize`·`restore`·`close`) | UIA WindowPattern, 없으면 Win32 |
 | `focus` | `windowId` | 창을 전경으로 가져온다. 실패하면 `FocusDenied` |
-| `close-window` | `windowId`, `waitMilliseconds`(0–5000, 기본 2000) | 창에 닫기(`WM_CLOSE`)를 요청하고 닫힐 때까지 기다린다. `closed`, `processExited`, `newWindows`. `closed: false`이고 `newWindows`가 있으면 앱이 확인창("저장할까요?")을 띄운 것이다. 그 창의 버튼을 `invoke`한 뒤 `wait-window absent`로 확인한다 |
+| `close-window` | `windowId`, `waitMilliseconds`(0–5000, 기본 2000) | 창에 닫기(`WM_CLOSE`)를 요청하고 닫힐 때까지 기다린다. `closed`, `processExited`, `newWindows`. `closed: false`이고 `newWindows`가 있으면 앱이 확인창("저장할까요?")을 띄운 것이다. 그 창의 버튼을 `invoke`한 뒤 `wait-window absent`로 확인한다. 닫힌 창은 세션의 `closedWindowIds`에 기록된다 |
 | `launch` | `executable`(절대 경로의 실행 파일), `arguments[]`, `lifetime`(`session` 기본·`keep`), `workingDirectory`, `verb`(`open`·`runas`), `waitWindow{timeoutMilliseconds(기본 10000), title, titleContains, className}` | `processId`, `pid`, `imagePath`, `lifetime`, `window`, `waitSatisfied`. `waitWindow`가 없으면 창을 기다리지 않는다 |
 | `open` | `target`(URI·`control.exe /name …`·`.msc`·`.cpl`·문서), `arguments[]`, `verb`, `workingDirectory`, `waitWindow` | `pid`, `processName`(실행된 프로세스를 알 수 있을 때), `window`, `waitSatisfied` |
 | `terminate-owned` | `processIds[]`(`launch` 결과의 `processId`) | 세션이 띄운 프로세스 종료 |
@@ -236,7 +239,7 @@ UIA 조작과 `click`·`type-text`·`key`·`chord`는 선택 인자 두 개를 �
 | 인자 | 의미 |
 |---|---|
 | `expect` | `{selector, condition, expected?, timeoutMilliseconds(기본 2000, ≤5000), pollMilliseconds?(기본 50)}`. 디스패치 뒤 조건을 기다려 `data.expect`(`satisfied`, `target`, `polls`)에 넣는다. 요청의 남은 시간 안에서 기다린다 |
-| `observeAfter` | `{rootElementId?, rootSnapshotToken?, settleMilliseconds(기본 100, 0–1000), maxDepth?(기본 6), includeNewWindows?}`. 조작 뒤 서브트리를 `data.after.tree`에, 조작 전에 없던 범위 안 창(팝업 포함)을 `data.after.newWindows`에 넣는다 |
+| `observeAfter` | `{rootElementId?, rootSnapshotToken?, settleMilliseconds(기본 100, 0–1000), maxDepth?(기본 6), interactiveOnly?(기본 true), includeNewWindows?}`. 조작 뒤 서브트리를 `data.after.tree`에(기본은 상호작용 요소와 그 조상만), 조작 전에 없던 범위 안 창(팝업 포함)을 `data.after.newWindows`에 넣는다. `data.after.tree`의 참조는 조작한 창의 windowId로 쓴다 |
 
 한 요청에 여러 조작 단계를 담는 묶음 요청은 없다.
 

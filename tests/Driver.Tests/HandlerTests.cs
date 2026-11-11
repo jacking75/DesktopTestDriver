@@ -175,6 +175,8 @@ internal static class HandlerTests
             Check(!Data(present).GetProperty("satisfied").GetBoolean() && Data(present).GetProperty("windows").GetArrayLength() == 1, "present window keeps absent unsatisfied");
             var closed = Ok(await c.Run("close-window", new { windowId = c.Window }));
             Check(Data(closed).GetProperty("closed").GetBoolean(), "closed");
+            Check(c.Sessions.Get(c.Session).Info.ClosedWindowIds.Contains(c.Window), "closed window recorded in the session");
+            Equal((bool?)null, c.Sessions.Get(c.Session).Info.ApplicationsStopped, "no cleanup result while open");
             Equal("InvalidTimeout", (await c.Run("close-window", new { windowId = c.Window, waitMilliseconds = 6000 })).Error?.Code, "wait range");
         }),
         ("H15 capture is journaled; stale references are refused with StaleElement", async () =>

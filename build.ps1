@@ -34,6 +34,7 @@ try {
    foreach($document in ($documents+$assets)){$to=Join-Path $destination $document;New-Item -ItemType Directory -Path (Split-Path -Parent $to) -Force | Out-Null;Copy-Item -LiteralPath (Join-Path $PSScriptRoot $document) -Destination $to}
    New-Item -ItemType Directory -Path (Join-Path $destination 'scripts') -Force | Out-Null
    Copy-Item -LiteralPath scripts/manage.ps1 -Destination (Join-Path $destination 'scripts/manage.ps1')
+   Copy-Item -LiteralPath scripts/Invoke-DtdRequest.ps1 -Destination (Join-Path $destination 'scripts/Invoke-DtdRequest.ps1')
 
    foreach($content in @('schemas','examples/standalone')){
     $contentTarget=Join-Path $destination $content
