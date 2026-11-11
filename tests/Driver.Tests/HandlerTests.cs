@@ -179,6 +179,15 @@ internal static class HandlerTests
             Equal((bool?)null, c.Sessions.Get(c.Session).Info.ApplicationsStopped, "no cleanup result while open");
             Equal("InvalidTimeout", (await c.Run("close-window", new { windowId = c.Window, waitMilliseconds = 6000 })).Error?.Code, "wait range");
         }),
+        ("H17 an action that closes its own window reports windowClosed instead of an error", async () =>
+        {
+            var c = new Context(); await c.OpenWindow(); var (id, token) = await c.Find(new { automationId = "SaveButton" });
+            c.Desktop.CloseOnInvoke = true;
+            var r = Data(Ok(await c.Run("invoke", new { windowId = c.Window, elementId = id, snapshotToken = token, observeAfter = new { includeNewWindows = true }, expect = new { selector = new { automationId = "MemoText" }, condition = "exists" } })));
+            Check(r.GetProperty("windowClosed").GetBoolean() && r.GetProperty("after").GetProperty("windowClosed").GetBoolean(), "windowClosed");
+            Check(!r.TryGetProperty("afterError", out _), "no afterError");
+            Equal("WindowClosed", r.GetProperty("expect").GetProperty("skipped").GetString(), "expect skipped");
+        }),
         ("H15 capture is journaled; stale references are refused with StaleElement", async () =>
         {
             var c = new Context(); await c.OpenWindow();

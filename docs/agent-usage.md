@@ -149,7 +149,7 @@ UIA 조작이 실패해도 실제 입력으로 자동 대체하지 않는다. UI
 | `window-state` | `windowId`, `state`(`minimize`·`maximize`·`restore`·`close`) | UIA WindowPattern, 없으면 Win32 |
 | `focus` | `windowId` | 창을 전경으로 가져온다. 실패하면 `FocusDenied` |
 | `close-window` | `windowId`, `waitMilliseconds`(0–5000, 기본 2000) | 창에 닫기(`WM_CLOSE`)를 요청하고 닫힐 때까지 기다린다. `closed`, `processExited`, `newWindows`. `closed: false`이고 `newWindows`가 있으면 앱이 확인창("저장할까요?")을 띄운 것이다. 그 창의 버튼을 `invoke`한 뒤 `wait-window absent`로 확인한다. 닫힌 창은 세션의 `closedWindowIds`에 기록된다 |
-| `launch` | `executable`(절대 경로의 실행 파일), `arguments[]`, `lifetime`(`session` 기본·`keep`), `workingDirectory`, `verb`(`open`·`runas`), `waitWindow{timeoutMilliseconds(기본 10000), title, titleContains, className}` | `processId`, `pid`, `imagePath`, `lifetime`, `window`, `waitSatisfied`. `waitWindow`가 없으면 창을 기다리지 않는다 |
+| `launch` | `executable`(절대 경로의 실행 파일), `arguments[]`, `lifetime`(`session` 기본·`keep`), `workingDirectory`, `verb`(`open`·`runas`), `waitWindow{title, titleContains, className, timeoutMilliseconds(생략하면 요청의 남은 시간)}` | `processId`, `pid`, `imagePath`, `lifetime`, `window`, `waitSatisfied`. `waitWindow`가 없으면 창을 기다리지 않는다 |
 | `open` | `target`(URI·`control.exe /name …`·`.msc`·`.cpl`·문서), `arguments[]`, `verb`, `workingDirectory`, `waitWindow` | `pid`, `processName`(실행된 프로세스를 알 수 있을 때), `window`, `waitSatisfied` |
 | `terminate-owned` | `processIds[]`(`launch` 결과의 `processId`) | 세션이 띄운 프로세스 종료 |
 
@@ -232,7 +232,12 @@ Agent는 한 번의 작업자 왕복에서 요소를 다시 확인하고(사라�
 - 그 창의 버튼을 `invoke`하거나 `close-window`로 답하면 원래 조작이 스스로 끝난다.
 - 이 경우 `expect`는 건너뛰고 `observeAfter`는 실행한다.
 
-이전에는 이런 조작이 제한 시간을 넘겨 `completionUnknown`이 되고 세션이 막혔다.
+**자기 창을 닫는 조작.** 대화상자의 확인·저장·예 버튼처럼 조작이 그 창을 닫으면 오류가 아니다.
+- 응답은 `completed`이고 `data.windowClosed: true`가 붙는다.
+- `observeAfter`는 `data.after.newWindows`만 돌려주고, `expect`는 `skipped: "WindowClosed"`로 표시된다.
+- 결과는 `wait-window`나 소유자 창에서 확인한다.
+
+창 ID는 세션 안에서 다시 쓰지 않는다. 앱을 다시 실행하면 창 ID와 참조가 모두 새로 나온다.
 
 UIA 조작과 `click`·`type-text`·`key`·`chord`는 선택 인자 두 개를 받는다. 실패해도 조작 결과는 바뀌지 않고 `data.afterError`에 코드만 남는다.
 

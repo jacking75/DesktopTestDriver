@@ -88,9 +88,20 @@ the operation, so read the error message and fix the request. Using the CLI? The
    `find-element` its button (e.g. `{controlType:"Button", nameStartsWith:"예"}` / `"Yes"`) in that windowId and
    `invoke` it.
 3. Then confirm with `gui_wait wait-window {title:"…", absent:true}`.
-4. Start the app again with `gui_window launch {executable, arguments:[…], waitWindow:{titleContains:"…"}}`.
-   The request `timeoutMilliseconds` also caps `waitWindow`, so set both (e.g. 15000). The new window has a new windowId
-   and new refs.
+4. Start the app again with `gui_window launch {executable, arguments:[…], waitWindow:{titleContains:"…"}}` and a
+   request `timeoutMilliseconds` such as 15000.
+   - `waitWindow` waits for the rest of that time.
+   - The new window gets a new windowId and new refs. Window ids are never reused within a session.
+
+**Testing "reopen".** Pick the path that matches what you are asked to verify:
+- Persisted content: relaunch with the file path (`launch … arguments:[path]`). This is the default.
+- The app's own Open feature: use its Open button and the Open dialog (below).
+- If unsure, do the relaunch and report the Open dialog as not tested.
+
+**An action that closes its own window** (a dialog's OK/Save/Yes button) is not an error.
+- The response is `completed` with `data.windowClosed:true`.
+- `observeAfter` returns only `data.after.newWindows`. `expect` is marked `skipped:"WindowClosed"`.
+- Check the result with `wait-window` or in the owner window.
 
 **Confirming window-level results.** `expect` checks elements inside the acting window. For window-level results, use
 `gui_wait wait-window`:
@@ -101,15 +112,17 @@ the operation, so read the error message and fix the request. Using the CLI? The
 
 **Standard Open/Save file dialogs.**
 
-1. Invoke the app's Open/Save button with `observeAfter:{includeNewWindows:true, maxDepth:3}`. The dialog comes back in
-   `data.after.newWindows` (its windowId) and inside the app's tree.
-2. File name field:
-   - Save dialog: the ComboBox `#FileNameControlHost` (supports Value).
-   - Open dialog: the Edit `#1148`.
-   - Labels follow the Windows language, so prefer these automationIds.
+1. Invoke the app's Open/Save button with `observeAfter:{includeNewWindows:true, maxDepth:3}`.
+   `data.after.newWindows` gives the dialog's windowId and title only, no elements.
+2. Read the two elements you need from the dialog window in one call:
+   - Save dialog: `find-element {windowId:"<dialog>", selectors:[{automationId:"FileNameControlHost"}, {automationId:"1"}]}`.
+     The file name field is a ComboBox that supports Value.
+   - Open dialog: use `{automationId:"1148", controlType:"Edit"}` instead of `FileNameControlHost`.
+   - Labels follow the Windows language, so use these automationIds.
    - The dialog opens in the folder it used last, so always set the full path.
-3. `set-value` the full path with `expect` value-equals, then `invoke` the button `#1` (Save/Open) with
-   `observeAfter:{includeNewWindows:true}`.
+3. `set-value` the full path with `expect` value-equals, then `invoke` the button `#1` (Save/Open).
+   - If the dialog closes, the response carries `windowClosed:true`.
+   - If a prompt appears, it carries `dispatchState:"pending-modal"` (next step).
 4. If the file exists, Save asks to replace it. The invoke then returns `completed` with
    `data.dispatchState:"pending-modal"` and the prompt in `data.modalWindows` (see below). Invoke the prompt's Yes
    button.
@@ -193,15 +206,19 @@ unknown action. Do not report a step as passed only because its status was `comp
 
 Run one controller host: `Controller.exe --serve`. Then send requests in either of two ways:
 
-- **From PowerShell (recommended):** use the helper `scripts\Invoke-DtdRequest.ps1`. It ships next to Controller.exe
-  in the package, or is in the repository's `scripts\`. It writes the request as UTF-8 (Korean is safe), sends it, and
-  returns the parsed response:
+- **From PowerShell (recommended):** use the helper script `Invoke-DtdRequest.ps1`. It writes the request as UTF-8,
+  sends it with `--request FILE`, and returns the parsed response. Request and response encoding are handled for you.
+  - Packaged: `<package>\Controller\scripts\Invoke-DtdRequest.ps1`, in the `scripts` folder next to Controller.exe.
+    It finds `..\Controller.exe` itself, so `-Controller` is not needed.
+  - Repository: `scripts\Invoke-DtdRequest.ps1`. Pass `-Controller <path>\Controller.exe`.
   ```powershell
-  $dtd = 'C:\…\Controller\scripts\Invoke-DtdRequest.ps1'      # -Controller C:\…\Controller.exe when run from the repository
+  $dtd = 'C:\…\Controller\scripts\Invoke-DtdRequest.ps1'
   $r = & $dtd -State $state -Session $s -Operation set-value -Arguments @{windowId='w1'; elementId='e5'; snapshotToken='b2d40c2611bd'; value='에이전트 시험'; expect=@{selector=@{automationId='MemoText'}; condition='value-equals'; expected='에이전트 시험'}}
   $r.status; $r.data.expect.satisfied
   ```
-  It also takes `-TimeoutMilliseconds`, `-RequestId` and `-Note`.
+  - It also takes `-TimeoutMilliseconds`, `-RequestId` and `-Note`.
+  - The only extra step is for printing Korean in your own console: set
+    `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`.
 - **A program that keeps a process open:** start `Controller.exe --json-lines` once, write one request JSON per line
   to its stdin (UTF-8), and read one response line each. This is the fastest path, but it pays off only when your
   process stays alive between requests. Each separate shell command would start a new one.
@@ -218,7 +235,7 @@ Other commands:
 - Argument reference: `Controller.exe --operations [operation]` (it includes the timeout limit). Full reference:
   `docs/agent-usage.md`.
 - If the host was started with `--state DIR`, every CLI call needs the same `--state DIR`.
-- **Non-ASCII text (Korean and so on):** Windows PowerShell 5.1 may re-encode piped text and break it. `Set-Content`
+- **Non-ASCII text without the helper:** Windows PowerShell 5.1 may re-encode piped text and break it. `Set-Content`
   writes ANSI, so do not use it for request files. Write the file like this (a BOM is accepted too) and use `--request FILE`:
   ```powershell
   [IO.File]::WriteAllText("$env:TEMP\r.json", ($request | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
@@ -255,5 +272,7 @@ Other commands:
 - `--session-close` reports `terminatedProcessIds`. These are the applications the session launched that are no longer
   running, including ones that had already exited (e.g. after `close-window`). `retainedProcessIds` were left running
   (`lifetime:"keep"`).
+- `closedWindowIds` lists windows closed by `close-window` and windows opened with `open` that the session closed.
+  Windows that disappeared because their launched process was stopped are covered by `terminatedProcessIds` instead.
 - `launch` + `waitWindow` matches only windows of the launched process (and its child processes). `open` + `waitWindow`
   matches new windows of any process, plus an already open window that fits the title or class conditions.

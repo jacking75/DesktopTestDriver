@@ -34,6 +34,8 @@ public sealed class FakeDesktop : IGuiDesktop
     public int MutationDelay;
     /// <summary>Throw after dispatch began (outcome unknown).</summary>
     public bool FailAfterDispatch;
+    /// <summary>Invoke closes the window, like a dialog's OK button.</summary>
+    public bool CloseOnInvoke;
     public int Invocations, AutomationCalls;
     public FakeDesktop()
     {
@@ -122,7 +124,7 @@ public sealed class FakeDesktop : IGuiDesktop
         switch (c.Operation)
         {
             case "set-value": target.Value = c.Arguments.GetProperty("value").GetString(); break;
-            case "invoke": Invocations++; break;
+            case "invoke": Invocations++; if (CloseOnInvoke) Trees.Remove(c.Window.Handle); break;
             case "set-toggle": target.Toggle = c.Arguments.GetProperty("desiredState").GetString(); break;
         }
         return new UiaResult([], before) { DispatchKind = "fake" };

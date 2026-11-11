@@ -164,7 +164,8 @@ internal static class UiTests
             Equal("pending-modal", save.GetProperty("dispatchState").GetString(), "dispatch state");
             var prompt = save.GetProperty("modalWindows")[0].GetProperty("windowId").GetString()!;
             Equal("active", Data(Ok(await r.Call(new("session-status", SessionId: r.Session)))).GetProperty("state").GetString(), "session stays active");
-            await r.Act("invoke", prompt, await r.Find(prompt, new { automationId = "CommandButton_6" }));
+            var yes = await r.Act("invoke", prompt, await r.Find(prompt, new { controlType = "Button", nameStartsWith = "예" }), new { observeAfter = new { includeNewWindows = true, settleMilliseconds = 300 } });
+            Check(yes.TryGetProperty("windowClosed", out var closedFlag) && closedFlag.GetBoolean() && !yes.TryGetProperty("afterError", out _), "closing the prompt reports windowClosed: " + yes.GetRawText());
             Check(Data(Ok(await r.Run("wait-window", new { title = dialogTitle, absent = true }, 5000))).GetProperty("satisfied").GetBoolean(), "save dialog closed");
             for (int i = 0; i < 20 && File.ReadAllText(path) != "new content"; i++) await Task.Delay(100);
             Equal("new content", File.ReadAllText(path), "file replaced");

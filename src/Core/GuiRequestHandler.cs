@@ -520,7 +520,7 @@ public sealed class GuiRequestHandler
     private (PublicWindow? Window, bool Satisfied) WaitForWindow(Ctx c, JsonElement wait, Func<DesktopWindow, bool> candidate, HashSet<long>? before)
     {
         var s = c.Session;
-        var limit = Stopwatch.GetTimestamp() + (long)(Math.Min(GuiProtocol.OptionalInt(wait, "timeoutMilliseconds") ?? 10000, Math.Max(0, c.RemainingMilliseconds - 100)) * (double)Stopwatch.Frequency / 1000);
+        var limit = Stopwatch.GetTimestamp() + (long)(Math.Min(GuiProtocol.OptionalInt(wait, "timeoutMilliseconds") ?? int.MaxValue, Math.Max(0, c.RemainingMilliseconds - 100)) * (double)Stopwatch.Frequency / 1000);
         string? title = GuiProtocol.OptionalText(wait, "title"), contains = GuiProtocol.OptionalText(wait, "titleContains"), className = GuiProtocol.OptionalText(wait, "className");
         var conditioned = title != null || contains != null || className != null;
         while (true)
@@ -653,13 +653,21 @@ public sealed class GuiRequestHandler
     private void After(Ctx c, DesktopWindow w, JsonObject data, HashSet<long>? before, bool skipExpect = false)
     {
         var a = c.A;
+        if (!Has(a, "expect") && !Has(a, "observeAfter")) return;
+        // The action can close its own window (a dialog's OK/Save button). That is a result, not an error:
+        // it is reported as windowClosed, and expect/observeAfter skip the window that no longer exists.
+        bool Closed() { try { return !WindowQuery.Same(w, desktop.Identify(w.Handle)); } catch (GuiException) { return true; } }
+        JsonNode? NewWindows() => before == null ? null : JsonSerializer.SerializeToNode(new Scope(this, c.Session).Filter(desktop.Windows()).Where(x => !before.Contains(x.Handle)).Select(x => Publish(c.Session, x)).ToArray(), GuiProtocol.Json);
         if (Has(a, "expect") && !skipExpect)
         {
             try
             {
+                if (Closed()) throw new GuiException("WindowNotFound");
                 var e = a.GetProperty("expect");
                 data["expect"] = JsonSerializer.SerializeToNode(Wait(c, w, [ReadCondition(e)], GuiProtocol.OptionalInt(e, "timeoutMilliseconds") ?? 2000, GuiProtocol.OptionalInt(e, "pollMilliseconds") ?? 50), GuiProtocol.Json);
             }
+            catch (GuiException e) when (e.Code is "WindowNotFound" or "WindowChanged" || Closed())
+            { data["windowClosed"] = true; data["expect"] = new JsonObject { ["satisfied"] = false, ["skipped"] = "WindowClosed" }; }
             catch (Exception e) { data["afterError"] = e is GuiException g ? g.Code : "ExpectFailed"; }
         }
         if (Has(a, "observeAfter"))
@@ -668,6 +676,12 @@ public sealed class GuiRequestHandler
             {
                 var o = a.GetProperty("observeAfter"); var windowId = c.T("windowId");
                 var settle = GuiProtocol.OptionalInt(o, "settleMilliseconds") ?? 100; if (settle > 0) Task.Delay(settle, c.Cancellation).GetAwaiter().GetResult();
+                if (Closed())
+                {
+                    data["windowClosed"] = true;
+                    data["after"] = new JsonObject { ["windowClosed"] = true, ["newWindows"] = NewWindows() };
+                    return;
+                }
                 var current = desktop.Identify(w.Handle);
                 var root = Has(o, "rootElementId") ? Locate(c, "rootElementId", "rootSnapshotToken", o) : null;
                 // Interactive elements only by default: dialogs carry many empty panes and toolbars.
@@ -680,6 +694,7 @@ public sealed class GuiRequestHandler
                     data["after"]!["newWindows"] = JsonSerializer.SerializeToNode(fresh, GuiProtocol.Json);
                 }
             }
+            catch (GuiException) when (Closed()) { data["windowClosed"] = true; try { data["after"] = new JsonObject { ["windowClosed"] = true, ["newWindows"] = NewWindows() }; } catch (GuiException) { data["after"] = new JsonObject { ["windowClosed"] = true }; } }
             catch (Exception e) { data["afterError"] = e is GuiException g ? g.Code : "ObserveFailed"; }
         }
     }
